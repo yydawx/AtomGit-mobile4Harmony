@@ -231,6 +231,17 @@ export class TodoStore {
     await this.load(scope, true);
   }
 
+  /** Refresh only when the event belongs to the account currently shown by this store. */
+  async refreshForAccount(accountId: string): Promise<boolean> {
+    const eventAccount = accountId.trim();
+    if (eventAccount.length === 0 || this.accountKey.length === 0
+      || eventAccount !== this.accountKey) {
+      return false;
+    }
+    await this.refresh();
+    return true;
+  }
+
   async ensureLoaded(scope: TodoScope): Promise<void> {
     const state = this.stateFor(scope);
     if (!state.ready && !state.loading && !state.loadingMore) {

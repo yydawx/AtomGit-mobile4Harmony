@@ -236,6 +236,20 @@ export default function todoStoreTest() {
       });
     });
 
+    it('refreshes_only_for_the_current_account', 0, () => {
+      const data = new FakeTodoRepository();
+      const store = new TodoStore(data);
+      store.initialize('account-a');
+      return store.refreshForAccount('account-b').then((refreshed: boolean) => {
+        expect(refreshed).assertFalse();
+        expect(data.calls.length).assertEqual(0);
+        return store.refreshForAccount('account-a');
+      }).then((refreshed: boolean) => {
+        expect(refreshed).assertTrue();
+        expect(data.calls.length).assertEqual(6);
+      });
+    });
+
     it('deduplicates_and_reports_only_loaded_counts', 0, () => {
       const data = new FakeTodoRepository();
       const duplicate = item(RepositoryItemKind.Issue, 1);

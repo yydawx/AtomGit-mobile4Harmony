@@ -7,9 +7,20 @@ import { HttpResult } from '../network/HttpClient';
 import { HttpPort } from '../network/HttpPort';
 import { HttpMethod } from '../network/NetworkPolicy';
 import { RequestSpec, kv } from '../network/RequestSpec';
-import { IssueDto, PullRequestDto, RepositoryIdentityDto } from '../model/CollaborationDtos';
-import { RepositoryItemKind, RepositoryItemRef, WorkItem } from '../model/CollaborationEntities';
-import { PullRequestTodoScope, TodoRepository } from './Ports';
+import {
+  IssueDto,
+  LabelIdentityDto,
+  PullRequestDto,
+  RepositoryIdentityDto,
+  UserIdentityDto
+} from '../model/CollaborationDtos';
+import { RepositoryItemKind, RepositoryItemRef } from '../model/CollaborationEntities';
+import { mergeTodoItems, TodoListItem, TodoRelation } from '../model/TodoWorkbench';
+import { PullRequestTodoScope, TodoWorkbenchRepository } from './Ports';
+
+function segment(value: string): string {
+  return encodeURIComponent(value);
+}
 
 function nonEmpty(value: string | undefined): boolean {
   return value !== undefined && value.trim().length > 0;
@@ -120,24 +131,91 @@ function fallbackWebUrl(ref: RepositoryItemRef, kind: RepositoryItemKind): strin
     + ref.number.toString();
 }
 
-function mapIssue(dto: IssueDto, endpoint: string): WorkItem {
+function loginOf(user: UserIdentityDto | undefined): string {
+  return user === undefined ? '' : text(user.login);
+}
+
+function loginsOf(users: UserIdentityDto[] | undefined): string[] {
+  const result: string[] = [];
+  if (users === undefined) {
+    return result;
+  }
+  for (const user of users) {
+    const login = loginOf(user);
+    if (login.length > 0) {
+      result.push(login);
+    }
+  }
+  return result;
+}
+
+function labelsOf(labels: LabelIdentityDto[] | undefined): string[] {
+  const result: string[] = [];
+  if (labels === undefined) {
+    return result;
+  }
+  for (const label of labels) {
+    const name = text(label.name);
+    if (name.length > 0) {
+      result.push(name);
+    }
+  }
+  return result;
+}
+
+function nonNegative(value: number | undefined): number {
+  return value === undefined || !Number.isFinite(value) || value <= 0 ? 0 : Math.floor(value);
+}
+
+function reviewState(dto: PullRequestDto): string {
+  const reviewers = dto.approval_reviewers;
+  if (reviewers === undefined || reviewers.length === 0) {
+    return '';
+  }
+  let approved = 0;
+  let rejected = 0;
+  for (const reviewer of reviewers) {
+    const status = text(reviewer.accept_status).toLowerCase();
+    if (status === 'true' || status === 'accept' || status === 'accepted'
+      || status === 'approved') {
+      approved++;
+    } else if (status === 'reject' || status === 'rejected') {
+      rejected++;
+    }
+  }
+  if (rejected > 0) {
+    return 'Rejected';
+  }
+  return approved === reviewers.length ? 'Approved' : 'Waiting for approval';
+}
+
+function mapIssueItem(dto: IssueDto, endpoint: string, relations: TodoRelation[]): TodoListItem {
   const ref = resolveRef(dto, RepositoryItemKind.Issue);
   if (ref === undefined) {
     throw new ApiError(ApiErrorKind.Parse, 200, 0,
       'issue payload is missing a stable repository identity', '', endpoint);
   }
   const title = nonEmpty(dto.title) ? text(dto.title) : 'Issue #' + ref.number.toString();
-  return new WorkItem(
+  return new TodoListItem(
     RepositoryItemKind.Issue,
     ref,
     title,
     nonEmpty(dto.state) ? text(dto.state) : 'unknown',
-    nonEmpty(dto.html_url) ? text(dto.html_url) : fallbackWebUrl(ref, RepositoryItemKind.Issue),
-    text(dto.updated_at)
+    text(dto.updated_at),
+    relations,
+    loginOf(dto.user),
+    loginsOf(dto.assignees),
+    [],
+    nonNegative(dto.comments),
+    labelsOf(dto.labels),
+    '',
+    false,
+    nonEmpty(dto.html_url) ? text(dto.html_url) : fallbackWebUrl(ref, RepositoryItemKind.Issue)
   );
 }
 
-function mapPullRequest(dto: PullRequestDto, endpoint: string): WorkItem {
+function mapPullRequestItem(dto: PullRequestDto, endpoint: string,
+  relations: TodoRelation[]): TodoListItem {
   const ref = resolveRef(dto, RepositoryItemKind.PullRequest);
   if (ref === undefined) {
     throw new ApiError(ApiErrorKind.Parse, 200, 0,
@@ -145,14 +223,35 @@ function mapPullRequest(dto: PullRequestDto, endpoint: string): WorkItem {
   }
   const title = nonEmpty(dto.title)
     ? text(dto.title) : 'Pull request #' + ref.number.toString();
-  return new WorkItem(
+  const reviewers: string[] = [];
+  if (dto.approval_reviewers !== undefined) {
+    for (const reviewer of dto.approval_reviewers) {
+      if (nonEmpty(reviewer.login)) {
+        reviewers.push(text(reviewer.login));
+      }
+    }
+  }
+  const comments = dto.notes === undefined ? dto.comments : dto.notes;
+  return new TodoListItem(
     RepositoryItemKind.PullRequest,
     ref,
     title,
     nonEmpty(dto.state) ? text(dto.state) : 'unknown',
-    nonEmpty(dto.html_url) ? text(dto.html_url) : fallbackWebUrl(ref, RepositoryItemKind.PullRequest),
-    text(dto.updated_at)
+    text(dto.updated_at),
+    relations,
+    loginOf(dto.user),
+    loginsOf(dto.assignees),
+    reviewers,
+    nonNegative(comments),
+    labelsOf(dto.labels),
+    reviewState(dto),
+    dto.draft === true,
+    nonEmpty(dto.html_url) ? text(dto.html_url) : fallbackWebUrl(ref, RepositoryItemKind.PullRequest)
   );
+}
+
+function uniqueTodoItems(items: TodoListItem[]): TodoListItem[] {
+  return mergeTodoItems([], items);
 }
 
 function parseRows(res: HttpResult, endpoint: string): Object[] {
@@ -183,19 +282,6 @@ function parseRows(res: HttpResult, endpoint: string): Object[] {
   return rows;
 }
 
-function uniqueItems(items: WorkItem[]): WorkItem[] {
-  const result: WorkItem[] = [];
-  const seen: Set<string> = new Set<string>();
-  for (const item of items) {
-    const key = item.kind + '|' + item.ref.key();
-    if (!seen.has(key)) {
-      seen.add(key);
-      result.push(item);
-    }
-  }
-  return result;
-}
-
 function offsetRequest(request: PageRequest, endpoint: string): OffsetPageRequest {
   if (!(request instanceof OffsetPageRequest)) {
     throw new ApiError(ApiErrorKind.Parse, 0, 0,
@@ -210,26 +296,34 @@ function throwIfCanceled(cancel: CancellationSignal | undefined, endpoint: strin
   }
 }
 
-export class TodoApiRepository implements TodoRepository {
+export class TodoApiRepository implements TodoWorkbenchRepository {
   private readonly http: HttpPort;
 
   constructor(http: HttpPort) {
     this.http = http;
   }
 
-  async assignedIssues(request: PageRequest, cancel?: CancellationSignal): Promise<Page<WorkItem>> {
-    return this.issues('assigned', request, cancel);
+  async assignedIssueItems(request: PageRequest,
+    cancel?: CancellationSignal): Promise<Page<TodoListItem>> {
+    return this.workbenchIssueItems('assigned', [TodoRelation.Assigned], request, cancel);
   }
 
-  async createdIssues(request: PageRequest, cancel?: CancellationSignal): Promise<Page<WorkItem>> {
-    return this.issues('created', request, cancel);
+  async createdIssueItems(request: PageRequest,
+    cancel?: CancellationSignal): Promise<Page<TodoListItem>> {
+    return this.workbenchIssueItems('created', [TodoRelation.CreatedByMe], request, cancel);
   }
 
-  async pullRequests(scope: PullRequestTodoScope, request: PageRequest,
-    cancel?: CancellationSignal): Promise<Page<WorkItem>> {
+  async pullRequestItems(scope: PullRequestTodoScope, request: PageRequest,
+    cancel?: CancellationSignal): Promise<Page<TodoListItem>> {
     const endpoint = '/user/pulls';
     const page = offsetRequest(request, endpoint);
     const scopeValue = this.scopeValue(scope, endpoint);
+    const relation = scope === PullRequestTodoScope.NeedsApproval
+      ? TodoRelation.ApprovalRequested
+      : scope === PullRequestTodoScope.NeedsReview
+        ? TodoRelation.ReviewRequested
+        : scope === PullRequestTodoScope.AssignedToMe
+          ? TodoRelation.Assigned : TodoRelation.CreatedByMe;
     throwIfCanceled(cancel, endpoint);
     const spec = new RequestSpec(HttpMethod.GET, endpoint, [
       kv('scope', scopeValue),
@@ -240,16 +334,61 @@ export class TodoApiRepository implements TodoRepository {
     const res = await this.http.request(spec, cancel);
     throwIfCanceled(cancel, endpoint);
     const rows = parseRows(res, endpoint);
-    const items: WorkItem[] = [];
+    const items: TodoListItem[] = [];
     for (const row of rows) {
-      items.push(mapPullRequest(row as PullRequestDto, endpoint));
+      items.push(mapPullRequestItem(row as PullRequestDto, endpoint, [relation]));
     }
-    return new Page<WorkItem>(uniqueItems(items), page,
+    return new Page<TodoListItem>(uniqueTodoItems(items), page,
       nextOffsetRequest(page, offsetHasMore(rows.length, page.perPage)));
   }
 
-  private async issues(filter: string, request: PageRequest,
-    cancel?: CancellationSignal): Promise<Page<WorkItem>> {
+  async repositoryIssueItems(owner: string, repo: string, request: PageRequest,
+    cancel?: CancellationSignal): Promise<Page<TodoListItem>> {
+    const endpoint = '/repos/' + segment(owner) + '/' + segment(repo) + '/issues';
+    const page = offsetRequest(request, endpoint);
+    throwIfCanceled(cancel, endpoint);
+    const spec = new RequestSpec(HttpMethod.GET, endpoint, [
+      kv('state', 'open'),
+      kv('sort', 'updated'),
+      kv('direction', 'desc'),
+      kv('page', page.page),
+      kv('per_page', page.perPage)
+    ], false, true);
+    const res = await this.http.request(spec, cancel);
+    throwIfCanceled(cancel, endpoint);
+    const rows = parseRows(res, endpoint);
+    const items: TodoListItem[] = [];
+    for (const row of rows) {
+      items.push(mapIssueItem(row as IssueDto, endpoint, [TodoRelation.OwnedProject]));
+    }
+    return new Page<TodoListItem>(uniqueTodoItems(items), page,
+      nextOffsetRequest(page, offsetHasMore(rows.length, page.perPage)));
+  }
+
+  async repositoryPullRequestItems(owner: string, repo: string, request: PageRequest,
+    cancel?: CancellationSignal): Promise<Page<TodoListItem>> {
+    const endpoint = '/repos/' + segment(owner) + '/' + segment(repo) + '/pulls';
+    const page = offsetRequest(request, endpoint);
+    throwIfCanceled(cancel, endpoint);
+    const spec = new RequestSpec(HttpMethod.GET, endpoint, [
+      kv('state', 'open'),
+      kv('page', page.page),
+      kv('per_page', page.perPage)
+    ], false, true);
+    const res = await this.http.request(spec, cancel);
+    throwIfCanceled(cancel, endpoint);
+    const rows = parseRows(res, endpoint);
+    const items: TodoListItem[] = [];
+    for (const row of rows) {
+      items.push(mapPullRequestItem(row as PullRequestDto, endpoint,
+        [TodoRelation.OwnedProject]));
+    }
+    return new Page<TodoListItem>(uniqueTodoItems(items), page,
+      nextOffsetRequest(page, offsetHasMore(rows.length, page.perPage)));
+  }
+
+  private async workbenchIssueItems(filter: string, relations: TodoRelation[],
+    request: PageRequest, cancel?: CancellationSignal): Promise<Page<TodoListItem>> {
     const endpoint = '/user/issues';
     const page = offsetRequest(request, endpoint);
     throwIfCanceled(cancel, endpoint);
@@ -262,11 +401,11 @@ export class TodoApiRepository implements TodoRepository {
     const res = await this.http.request(spec, cancel);
     throwIfCanceled(cancel, endpoint);
     const rows = parseRows(res, endpoint);
-    const items: WorkItem[] = [];
+    const items: TodoListItem[] = [];
     for (const row of rows) {
-      items.push(mapIssue(row as IssueDto, endpoint));
+      items.push(mapIssueItem(row as IssueDto, endpoint, relations));
     }
-    return new Page<WorkItem>(uniqueItems(items), page,
+    return new Page<TodoListItem>(uniqueTodoItems(items), page,
       nextOffsetRequest(page, offsetHasMore(rows.length, page.perPage)));
   }
 

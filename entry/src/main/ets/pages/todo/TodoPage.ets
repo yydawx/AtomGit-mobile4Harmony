@@ -1,428 +1,110 @@
 import { DisplayMetrics } from '../../common/DisplayMetrics';
-import { EmptySessionStore } from '../../viewmodel/EmptySessionStore';
-import { EmptyTodoStore, TodoCategory, TodoScope, TodoStore, scopesForCategory }
-  from '../../viewmodel/TodoStore';
-import { SessionStore } from '../../viewmodel/SessionStore';
-import { RepositoryItemKind, WorkItem } from '../../model/CollaborationEntities';
+import { AppTopBar } from '../../components/AppTopBar';
 import { Dimens, FontSize, Motion, Radius } from '../../components/DesignTokens';
-import { AppTopBar, AppTopBarAction } from '../../components/AppTopBar';
 import { TAB_BAR_CONTENT_INSET } from '../../components/NavigationMetrics';
-import { EmptyView, ErrorView } from '../../components/StatusViews';
-import { GlassCard } from '../../components/GlassCard';
 
 @ComponentV2
 export struct TodoPage {
-  @Param store: TodoStore = new EmptyTodoStore();
-  @Param session: SessionStore = new EmptySessionStore();
-  @Param onOpenItem: (workItem: WorkItem) => void = () => {};
+  @Param onOpenIssues: () => void = () => {};
+  @Param onOpenPullRequests: () => void = () => {};
 
-  @Local category: TodoCategory = TodoCategory.Pending;
   @Local metrics: DisplayMetrics = DisplayMetrics.instance();
   @Local appeared: boolean = false;
-  @Local barScrolled: boolean = false;
-
-  private topBarActions(): AppTopBarAction[] {
-    const refresh: AppTopBarAction = new AppTopBarAction(
-      $r('sys.symbol.arrow_clockwise'), 'refresh');
-    const actions: AppTopBarAction[] = [refresh];
-    return actions;
-  }
-
-  private handleBarAction(index: number): void {
-    if (index === 0) {
-      this.refresh();
-    }
-  }
-
-  private handleSegmentSelect(index: number): void {
-    this.category = index === 0 ? TodoCategory.Pending : TodoCategory.Created;
-  }
-
-  private segmentLabels(): string[] {
-    const labels: string[] = ['To handle', 'Created by me'];
-    return labels;
-  }
 
   aboutToAppear(): void {
-    this.getUIContext().animateTo({ duration: Motion.slow, curve: Curve.Friction }, () => {
+    this.getUIContext().animateTo({ duration: Motion.normal, curve: Curve.EaseOut }, () => {
       this.appeared = true;
     });
-    this.initialize();
-  }
-
-  aboutToDisappear(): void {
-    this.store.cancelPending();
-  }
-
-  @Monitor('session.user')
-  onAccountChanged(): void {
-    this.initialize();
-  }
-
-  private initialize(): void {
-    const user = this.session.user;
-    this.store.initialize(user === undefined ? '' : user.accountId);
-    if (user !== undefined) {
-      this.store.loadAll();
-    }
-  }
-
-  private async refresh(): Promise<void> {
-    await this.store.refresh();
-  }
-
-  private async loadMoreAtEnd(): Promise<void> {
-    for (const scope of scopesForCategory(this.category)) {
-      await this.store.loadMore(scope);
-    }
-  }
-
-  private categoryLabel(category: TodoCategory): string {
-    return category === TodoCategory.Pending ? 'To handle' : 'Created by me';
-  }
-
-  private scopeLabel(scope: TodoScope): string {
-    switch (scope) {
-      case TodoScope.AssignedIssues:
-        return 'Issues assigned to me';
-      case TodoScope.AssignedPullRequests:
-        return 'Pull requests assigned to me';
-      case TodoScope.NeedsApprovalPullRequests:
-        return 'Pull requests awaiting my approval';
-      case TodoScope.NeedsReviewPullRequests:
-        return 'Pull requests awaiting my review';
-      case TodoScope.CreatedIssues:
-        return 'Issues I created';
-      default:
-        return 'Pull requests I created';
-    }
-  }
-
-  private emptyText(scope: TodoScope): string {
-    switch (scope) {
-      case TodoScope.AssignedIssues:
-        return 'No open issues are assigned to you';
-      case TodoScope.AssignedPullRequests:
-        return 'No open pull requests are assigned to you';
-      case TodoScope.NeedsApprovalPullRequests:
-        return 'No pull requests are awaiting your approval';
-      case TodoScope.NeedsReviewPullRequests:
-        return 'No pull requests are awaiting your review';
-      case TodoScope.CreatedIssues:
-        return 'You have no open issues';
-      default:
-        return 'You have no open pull requests';
-    }
-  }
-
-  private scopeSymbol(scope: TodoScope): Resource {
-    if (scope === TodoScope.AssignedIssues || scope === TodoScope.CreatedIssues) {
-      return $r('sys.symbol.doc_text');
-    }
-    return $r('sys.symbol.checkmark_square');
-  }
-
-  private itemType(item: WorkItem): string {
-    return item.kind === RepositoryItemKind.Issue ? 'Issue' : 'Pull request';
-  }
-
-  private itemSymbol(item: WorkItem): Resource {
-    return item.kind === RepositoryItemKind.Issue
-      ? $r('sys.symbol.doc_text') : $r('sys.symbol.checkmark_square');
-  }
-
-  private updatedText(value: string): string {
-    if (value.length === 0) {
-      return 'Update time unavailable';
-    }
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) {
-      return 'Update time unavailable';
-    }
-    const names: string[] = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
-    return names[date.getMonth()] + ' ' + date.getDate().toString() + ', '
-      + date.getFullYear().toString() + ' ' + this.pad(date.getHours()) + ':'
-      + this.pad(date.getMinutes());
-  }
-
-  private pad(value: number): string {
-    return value < 10 ? '0' + value.toString() : value.toString();
   }
 
   @Builder
-  retryButton(scope: TodoScope): void {
-    Button('Retry')
-      .fontSize(FontSize.caption)
-      .height(32)
-      .backgroundColor($r('app.color.ag_accent_soft'))
-      .fontColor($r('app.color.ag_accent'))
-      .onClick(() => {
-        this.store.retry(scope);
-      })
-      .id('todo_retry_' + scope)
-  }
+  entryRow(title: string, isPullRequest: boolean, action: () => void): void {
+    Button({ type: ButtonType.Normal }) {
+      Row({ space: Dimens.md }) {
+        Stack({ alignContent: Alignment.Center }) {
+          Rect()
+            .width(38)
+            .height(38)
+            .radius(10)
+            .fill(isPullRequest
+              ? $r('app.color.ag_accent') : $r('app.color.ag_success'))
+          SymbolGlyph(isPullRequest
+            ? $r('sys.symbol.checkmark_square') : $r('sys.symbol.doc_text'))
+            .fontSize(20)
+            .fontColor([$r('app.color.ag_text_on_accent')])
+        }
+        .width(38)
+        .height(38)
 
-  @Builder
-  itemRow(item: WorkItem): void {
-    Row({ space: Dimens.md }) {
-      Column() {
-        SymbolGlyph(this.itemSymbol(item))
-          .fontSize(19)
-          .fontColor([$r('app.color.ag_accent')])
-      }
-      .width(36)
-      .height(36)
-      .justifyContent(FlexAlign.Center)
-      .borderRadius(Radius.chip)
-      .backgroundColor($r('app.color.ag_accent_soft'))
-
-      Column({ space: 5 }) {
-        Text(item.title)
-          .fontSize(FontSize.bodyLarge)
+        Text(title)
+          .fontSize(FontSize.title)
           .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.ag_text_primary'))
-          .maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
-        Text(item.ref.owner + '/' + item.ref.repo)
-          .fontSize(FontSize.caption)
-          .fontColor($r('app.color.ag_text_secondary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
-        Row({ space: Dimens.sm }) {
-          Text(this.itemType(item))
-            .fontSize(10)
-            .fontColor($r('app.color.ag_accent'))
-          Text('#' + item.ref.number.toString())
-            .fontSize(10)
-            .fontColor($r('app.color.ag_text_tertiary'))
-          Text(item.state)
-            .fontSize(10)
-            .fontColor($r('app.color.ag_text_secondary'))
-          Text(this.updatedText(item.updatedAt))
-            .fontSize(10)
-            .fontColor($r('app.color.ag_text_tertiary'))
-            .layoutWeight(1)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
-        .width('100%')
+          .layoutWeight(1)
+          .textAlign(TextAlign.Start)
+
+        SymbolGlyph($r('sys.symbol.chevron_right'))
+          .fontSize(18)
+          .fontColor([$r('app.color.ag_text_tertiary')])
       }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
+      .width('100%')
+      .height(62)
+      .padding({ left: Dimens.md, right: Dimens.md })
     }
     .width('100%')
-    .alignItems(VerticalAlign.Top)
-    .padding({ top: Dimens.md, bottom: Dimens.md })
-    .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.99 })
+    .height(62)
+    .borderRadius(0)
+    .backgroundColor($r('app.color.ag_surface'))
+    .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.995 })
     .onClick(() => {
-      this.onOpenItem(item);
+      action();
     })
-  }
-
-  @Builder
-  scopeSection(scope: TodoScope): void {
-    GlassCard({
-      radius: Radius.card,
-      elevated: false,
-      cardPadding: { left: Dimens.md, right: Dimens.md, top: Dimens.md, bottom: Dimens.md }
-    }) {
-      Column({ space: Dimens.xs }) {
-        Row({ space: Dimens.sm }) {
-          SymbolGlyph(this.scopeSymbol(scope))
-            .fontSize(17)
-            .fontColor([$r('app.color.ag_text_secondary')])
-          Text(this.scopeLabel(scope))
-            .fontSize(FontSize.bodyLarge)
-            .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.ag_text_primary'))
-            .layoutWeight(1)
-          Text(this.store.scopeCountText(scope))
-            .fontSize(10)
-            .fontColor($r('app.color.ag_text_tertiary'))
-        }
-        .width('100%')
-        .alignItems(VerticalAlign.Center)
-
-        if (this.store.stateFor(scope).loading && this.store.stateFor(scope).items.length === 0) {
-          Row({ space: Dimens.sm }) {
-            LoadingProgress()
-              .width(20)
-              .height(20)
-              .color($r('app.color.ag_accent'))
-            Text('Loading ' + this.scopeLabel(scope).toLowerCase())
-              .fontSize(FontSize.caption)
-              .fontColor($r('app.color.ag_text_secondary'))
-          }
-          .width('100%')
-          .justifyContent(FlexAlign.Center)
-          .padding({ top: Dimens.xl, bottom: Dimens.xl })
-        } else if (this.store.stateFor(scope).errorMessage.length > 0
-          && this.store.stateFor(scope).items.length === 0) {
-          Column({ space: Dimens.sm }) {
-            ErrorView({
-              message: this.store.stateFor(scope).errorMessage,
-              viewId: 'todo_error_' + scope
-            })
-            this.retryButton(scope)
-          }
-          .width('100%')
-          .alignItems(HorizontalAlign.Start)
-        } else if (this.store.stateFor(scope).items.length === 0) {
-          EmptyView({
-            text: this.emptyText(scope),
-            symbol: this.scopeSymbol(scope),
-            viewId: 'todo_empty_' + scope
-          })
-        } else {
-          if (this.store.stateFor(scope).errorMessage.length > 0) {
-            Row({ space: Dimens.sm }) {
-              ErrorView({
-                message: this.store.stateFor(scope).errorMessage,
-                viewId: 'todo_partial_error_' + scope
-              })
-              .layoutWeight(1)
-              this.retryButton(scope)
-            }
-            .width('100%')
-            .alignItems(VerticalAlign.Center)
-          }
-
-          ForEach(this.store.stateFor(scope).items, (item: WorkItem) => {
-            Column() {
-              Divider()
-                .color($r('app.color.ag_separator'))
-              this.itemRow(item)
-            }
-            .width('100%')
-          }, (item: WorkItem) => item.kind + '|' + item.ref.key())
-
-          if (this.store.stateFor(scope).loadingMore) {
-            Row({ space: Dimens.sm }) {
-              LoadingProgress()
-                .width(18)
-                .height(18)
-                .color($r('app.color.ag_accent'))
-              Text('Loading more')
-                .fontSize(FontSize.caption)
-                .fontColor($r('app.color.ag_text_tertiary'))
-            }
-            .width('100%')
-            .justifyContent(FlexAlign.Center)
-            .padding({ top: Dimens.sm, bottom: Dimens.sm })
-          } else if (this.store.stateFor(scope).hasMore) {
-            Button('Load more')
-              .fontSize(FontSize.caption)
-              .height(32)
-              .backgroundColor($r('app.color.ag_accent_soft'))
-              .fontColor($r('app.color.ag_accent'))
-              .onClick(() => {
-                this.store.loadMore(scope);
-              })
-              .id('todo_load_more_' + scope)
-          } else {
-            Text('End of loaded items')
-              .fontSize(10)
-              .fontColor($r('app.color.ag_text_tertiary'))
-              .padding({ top: Dimens.xs, bottom: Dimens.xs })
-          }
-        }
-      }
-      .width('100%')
-      .alignItems(HorizontalAlign.Start)
-    }
-  }
-
-  @Builder
-  partialFailureNotice(): void {
-    if (this.store.failedScopeCount(this.category) > 0) {
-      Row({ space: Dimens.sm }) {
-        SymbolGlyph($r('sys.symbol.exclamationmark_circle'))
-          .fontSize(16)
-          .fontColor([$r('app.color.ag_warning')])
-        Text(this.store.failedScopeCount(this.category).toString()
-          + (this.store.failedScopeCount(this.category) === 1
-            ? ' source could not be loaded' : ' sources could not be loaded'))
-          .fontSize(FontSize.caption)
-          .fontColor($r('app.color.ag_text_secondary'))
-          .layoutWeight(1)
-      }
-      .width('100%')
-      .padding(Dimens.md)
-      .borderRadius(Radius.chip)
-      .backgroundColor($r('app.color.ag_surface'))
-      .border({ width: 1, color: $r('app.color.ag_warning') })
-    }
+    .id(isPullRequest ? 'todo_open_pull_requests' : 'todo_open_issues')
   }
 
   build() {
     Stack({ alignContent: Alignment.Top }) {
-      List({ space: Dimens.md }) {
-        ListItem() {
-          Column() {
-            Blank()
-              .width('100%')
-              .height(this.metrics.topInsetVp + AppTopBar.totalHeight(true) + Dimens.sm)
-          }
+      Column() {
+        Blank()
           .width('100%')
-        }
+          .height(this.metrics.topInsetVp + AppTopBar.totalHeight(false) + Dimens.lg)
 
-        ListItem() {
-          this.partialFailureNotice()
-        }
+        Text('与我有关')
+          .fontSize(FontSize.body)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.ag_text_secondary'))
+          .width('100%')
+          .padding({ left: Dimens.xs, bottom: Dimens.sm })
 
-        ForEach(scopesForCategory(this.category), (scope: TodoScope) => {
-          ListItem() {
-            this.scopeSection(scope)
-          }
-        }, (scope: TodoScope) => scope)
-
-        ListItem() {
-          Text('Counts show only items loaded on this device.')
-            .fontSize(10)
-            .fontColor($r('app.color.ag_text_tertiary'))
-            .width('100%')
-            .textAlign(TextAlign.Center)
-            .padding({ top: Dimens.sm, bottom: Dimens.xl })
+        Column() {
+          this.entryRow('Issues', false, this.onOpenIssues)
+          Divider()
+            .color($r('app.color.ag_separator'))
+            .margin({ left: 62 })
+          this.entryRow('Pull Requests', true, this.onOpenPullRequests)
         }
-        .margin({
-          bottom: TAB_BAR_CONTENT_INSET + this.metrics.bottomInsetVp
-            + this.metrics.desktopDockInset() + Dimens.sm
-        })
+        .width('100%')
+        .borderRadius(Radius.card)
+        .backgroundColor($r('app.color.ag_surface'))
+        .border({ width: 1, color: $r('app.color.ag_card_border') })
+        .clip(true)
+        .opacity(this.appeared ? 1 : 0)
+        .translate({ y: this.appeared ? 0 : 8 })
+
+        Blank()
       }
       .width('100%')
       .height('100%')
-      .padding({ left: Dimens.lg, right: Dimens.lg })
-      .scrollBar(BarState.Off)
-      .edgeEffect(EdgeEffect.Spring)
-      .onReachEnd(() => {
-        this.loadMoreAtEnd();
+      .padding({
+        left: Dimens.lg,
+        right: Dimens.lg,
+        bottom: TAB_BAR_CONTENT_INSET + this.metrics.bottomInsetVp
+          + this.metrics.desktopDockInset() + Dimens.sm
       })
-      .onScrollIndex((_start: number, _end: number, offset: number) => {
-        const next: boolean = offset > 8;
-        if (next !== this.barScrolled) {
-          this.barScrolled = next;
-        }
-      })
-      .id('todo_list')
 
       AppTopBar({
         title: '待办',
-        subtitle: this.session.user === undefined ? '' : '@' + this.session.user.login,
-        actions: this.topBarActions(),
-        segments: this.segmentLabels(),
-        segmentIndex: this.category === TodoCategory.Pending ? 0 : 1,
-        scrolled: this.barScrolled,
-        onSegmentSelect: (index: number): void => {
-          this.handleSegmentSelect(index);
-        },
-        onAction: (index: number): void => {
-          this.handleBarAction(index);
-        }
+        scrolled: false
       })
     }
     .width('100%')

@@ -10,14 +10,21 @@ import { Dimens, FontSize, Radius } from '../components/DesignTokens';
 import { GlassCard } from '../components/GlassCard';
 import { glassBorderColor } from '../components/Materials';
 import { ErrorView } from '../components/StatusViews';
-import { AppRoute, AppRouteName, IssueDetailParams, PullRequestDetailParams } from '../navigation/AppRoute';
-import { RepositoryItemKind, RepositoryItemRef, WorkItem } from '../model/CollaborationEntities';
+import {
+  AppRoute,
+  AppRouteName,
+  IssueDetailParams,
+  PullRequestDetailParams,
+  TodoListParams
+} from '../navigation/AppRoute';
+import { RepositoryItemKind, RepositoryItemRef } from '../model/CollaborationEntities';
+import { TodoListItem, TodoListKind } from '../model/TodoWorkbench';
 import { RepoBrowseStore } from '../viewmodel/RepoBrowseStore';
 import { LoadState, SessionStore } from '../viewmodel/SessionStore';
 import { ActivityStore } from '../viewmodel/ActivityStore';
 import { IssueDetailStore } from '../viewmodel/IssueDetailStore';
 import { PullRequestDetailStore } from '../viewmodel/PullRequestDetailStore';
-import { TodoStore } from '../viewmodel/TodoStore';
+import { TodoWorklistStore } from '../viewmodel/TodoWorklistStore';
 import { ActivityPage } from './activity/ActivityPage';
 import { IssueDetailPage } from './issue/IssueDetailPage';
 import { PullRequestDetailPage } from './pull/PullRequestDetailPage';
@@ -26,6 +33,7 @@ import { LoginPage } from './login/LoginPage';
 import { MinePage } from './mine/MinePage';
 import { RepoDetailPage } from './repo/RepoDetailPage';
 import { TodoPage } from './todo/TodoPage';
+import { TodoWorklistPage } from './todo/TodoWorklistPage';
 
 const HOLDER_KEY: string = 'atomgit_container';
 
@@ -61,7 +69,8 @@ struct Index {
   @Local activity: ActivityStore | undefined = undefined;
   @Local issueDetail: IssueDetailStore | undefined = undefined;
   @Local pullRequestDetail: PullRequestDetailStore | undefined = undefined;
-  @Local todo: TodoStore | undefined = undefined;
+  @Local todoIssues: TodoWorklistStore | undefined = undefined;
+  @Local todoPullRequests: TodoWorklistStore | undefined = undefined;
   @Local currentTab: number = 0;
   @Local bootstrapped: boolean = false;
   @Local booting: boolean = true;
@@ -107,7 +116,8 @@ struct Index {
     this.activity = c.activity;
     this.issueDetail = c.issueDetail;
     this.pullRequestDetail = c.pullRequestDetail;
-    this.todo = c.todo;
+    this.todoIssues = c.todoIssues;
+    this.todoPullRequests = c.todoPullRequests;
     try {
       await c.bootstrap();
     } catch (err) {
@@ -119,7 +129,8 @@ struct Index {
       this.activity = undefined;
       this.issueDetail = undefined;
       this.pullRequestDetail = undefined;
-      this.todo = undefined;
+      this.todoIssues = undefined;
+      this.todoPullRequests = undefined;
     } finally {
       this.booting = false;
     }
@@ -168,6 +179,23 @@ struct Index {
     if (slash > 0 && slash < repository.length - 1) {
       await this.openRepo(repository.substring(0, slash), repository.substring(slash + 1));
     }
+  }
+
+  private openTodoList(kind: TodoListKind): void {
+    const route = kind === TodoListKind.Issues ? AppRoute.todoIssues() : AppRoute.todoPullRequests();
+    this.pathStack.pushPathByName(route.name, route.params);
+  }
+
+  private todoKind(param: object): TodoListKind {
+    if (param instanceof TodoListParams) {
+      return param.kind;
+    }
+    return TodoListKind.Issues;
+  }
+
+  private todoStoreFor(param: object): TodoWorklistStore {
+    return this.todoKind(param) === TodoListKind.Issues
+      ? this.todoIssues as TodoWorklistStore : this.todoPullRequests as TodoWorklistStore;
   }
 
   private openWeb(url: string): void {
@@ -227,6 +255,18 @@ struct Index {
         },
         onOpenWeb: (url: string) => {
           this.openWeb(url);
+        }
+      })
+    } else if (name === AppRouteName.TodoIssues || name === AppRouteName.TodoPullRequests) {
+      TodoWorklistPage({
+        kind: this.todoKind(param),
+        store: this.todoStoreFor(param),
+        session: this.session as SessionStore,
+        onBack: () => {
+          this.pathStack.pop();
+        },
+        onOpenItem: (item: TodoListItem) => {
+          this.openTarget(item.ref, item.kind, item.ref.owner + '/' + item.ref.repo);
         }
       })
     }
@@ -290,10 +330,11 @@ struct Index {
 
     TabContent() {
       TodoPage({
-        store: this.todo as TodoStore,
-        session: this.session as SessionStore,
-        onOpenItem: (item: WorkItem) => {
-          this.openTarget(item.ref, item.kind, item.ref.owner + '/' + item.ref.repo);
+        onOpenIssues: () => {
+          this.openTodoList(TodoListKind.Issues);
+        },
+        onOpenPullRequests: () => {
+          this.openTodoList(TodoListKind.PullRequests);
         }
       })
     }
@@ -437,10 +478,11 @@ struct Index {
             })
           } else if (this.currentTab === 1) {
             TodoPage({
-              store: this.todo as TodoStore,
-              session: this.session as SessionStore,
-              onOpenItem: (item: WorkItem) => {
-                this.openTarget(item.ref, item.kind, item.ref.owner + '/' + item.ref.repo);
+              onOpenIssues: () => {
+                this.openTodoList(TodoListKind.Issues);
+              },
+              onOpenPullRequests: () => {
+                this.openTodoList(TodoListKind.PullRequests);
               }
             })
           } else if (this.currentTab === 2) {

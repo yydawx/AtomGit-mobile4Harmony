@@ -79,9 +79,11 @@ Solid lines show implemented runtime paths. Dotted lines show declared contracts
 | Activity page | Implemented | The default tab renders a compact date-grouped feed with account/project sources, pull-to-refresh, pagination, partial failure, and project-level navigation while Issue/PR detail pages are unavailable. |
 | Collaboration DTOs and entities | Partly verified | Activity payloads now include the live repository-event fields and the documented personal-event envelope. Notification, pull request file, approval readback, comment, and issue detail shapes remain recorded fixtures. |
 | Typed routes | Foundation implemented | Route factories exist; the app route registry and feature page callers are not wired to them yet. |
-| Refresh events | Foundation implemented | In-process publish/subscribe and account/domain filters exist; feature mutations and stores are not connected. |
-| Application wiring | Partial | `AppContainer` wires `coreRepository`, session, repository browsing, refresh coordination, and the Activity feature adapter/store. Remaining feature adapters will be added as owners implement them. |
-| Device UI test harness | Passing | `entry/src/ohosTest` runs a Hypium + UiTest login-to-activity flow with deterministic repositories. The suite passes on a HarmonyOS 6.1.1 (API 24) `Pura 90` emulator. See `docs/e2e-testing.md`. |
+| Todo workbench | Implemented | The Todo tab opens GitHub-style Issues and Pull Request lists with shared relation filtering, deduplication, ordering, paging, partial-failure handling, and owned-project exclusion of the current user. See `docs/todo-workbench-api-verification.md`. |
+| Pull request merge | Implemented | The pull request detail page uses the authenticated viewer's `mergeable_state`, including `merged_by_user_passed` and server reason text, then merges with an expected-head guard and requires readback confirmation. See `docs/pull-request-merge.md`. |
+| Refresh events | Partially connected | In-process publish/subscribe and account/domain filters exist. Issue comments, Pull Request comments, approvals, and merges refresh the matching Todo worklist after server-confirmed readback. Notification refresh remains pending. |
+| Application wiring | Partial | `AppContainer` wires the core repository, session, repository browsing, Activity, collaboration detail stores, Todo workbench stores, and refresh coordination. Notification wiring remains pending. |
+| Device UI test harness | Passing | `entry/src/ohosTest` runs Hypium + UiTest login, Activity, Todo entry, and both Todo worklists with deterministic repositories. The suite passes on a HarmonyOS 6.1.1 (API 24) `Pura 90` emulator. See `docs/e2e-testing.md`. |
 
 Repository activity has anonymous live-read evidence. Personal activity authentication
 failure is live-verified, but its authenticated success payload still requires a test

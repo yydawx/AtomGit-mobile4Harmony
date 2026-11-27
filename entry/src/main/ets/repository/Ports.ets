@@ -9,9 +9,9 @@ import {
   NotificationItem,
   PullRequestDetail,
   PullRequestFile,
-  RepositoryItemRef,
-  WorkItem
+  RepositoryItemRef
 } from '../model/CollaborationEntities';
+import { TodoListItem } from '../model/TodoWorkbench';
 
 export interface UserRepository {
   currentUser(cancel?: CancellationSignal): Promise<CurrentUser>;
@@ -71,6 +71,22 @@ export class ApprovePullRequestOptions {
   }
 }
 
+/** Merge options. Expected head prevents merging a version that changed after review. */
+export class MergePullRequestOptions {
+  readonly expectedHeadSha: string;
+  readonly mergeMethod: string;
+  readonly forceMerge: boolean;
+  readonly squash: boolean;
+
+  constructor(expectedHeadSha: string = '', mergeMethod: string = 'merge',
+    forceMerge: boolean = false, squash: boolean = false) {
+    this.expectedHeadSha = expectedHeadSha.trim();
+    this.mergeMethod = mergeMethod.trim().length > 0 ? mergeMethod.trim() : 'merge';
+    this.forceMerge = forceMerge;
+    this.squash = squash;
+  }
+}
+
 export interface ActivityRepository {
   personalActivity(username: string, year: number, request: PageRequest,
     cancel?: CancellationSignal): Promise<Page<ActivityItem>>;
@@ -78,10 +94,16 @@ export interface ActivityRepository {
     cancel?: CancellationSignal): Promise<Page<ActivityItem>>;
 }
 
-export interface TodoRepository {
-  assignedIssues(request: PageRequest, cancel?: CancellationSignal): Promise<Page<WorkItem>>;
-  createdIssues(request: PageRequest, cancel?: CancellationSignal): Promise<Page<WorkItem>>;
-  pullRequests(scope: PullRequestTodoScope, request: PageRequest, cancel?: CancellationSignal): Promise<Page<WorkItem>>;
+/** Todo relation reads used by the two GitHub-style worklists. */
+export interface TodoWorkbenchRepository {
+  assignedIssueItems(request: PageRequest, cancel?: CancellationSignal): Promise<Page<TodoListItem>>;
+  createdIssueItems(request: PageRequest, cancel?: CancellationSignal): Promise<Page<TodoListItem>>;
+  pullRequestItems(scope: PullRequestTodoScope, request: PageRequest,
+    cancel?: CancellationSignal): Promise<Page<TodoListItem>>;
+  repositoryIssueItems(owner: string, repo: string, request: PageRequest,
+    cancel?: CancellationSignal): Promise<Page<TodoListItem>>;
+  repositoryPullRequestItems(owner: string, repo: string, request: PageRequest,
+    cancel?: CancellationSignal): Promise<Page<TodoListItem>>;
 }
 
 export interface IssueRepository {
@@ -102,6 +124,9 @@ export interface PullRequestRepository {
   /** The caller is expected to read the PR detail back before showing success. */
   approvePullRequest(ref: RepositoryItemRef, options?: ApprovePullRequestOptions,
     cancel?: CancellationSignal): Promise<void>;
+  /** Server-enforced merge permission; resolves with reread detail only after confirmation. */
+  mergePullRequest(ref: RepositoryItemRef, options?: MergePullRequestOptions,
+    cancel?: CancellationSignal): Promise<PullRequestDetail>;
 }
 
 export interface NotificationRepository {

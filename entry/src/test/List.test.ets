@@ -22,8 +22,9 @@ import issueDetailStoreTest from './IssueDetailStore.test';
 import pullRequestRepositoryTest from './PullRequestRepository.test';
 import pullRequestDetailStoreTest from './PullRequestDetailStore.test';
 import todoRepositoryTest from './TodoRepository.test';
-import todoStoreTest from './TodoStore.test';
 import refreshCoordinatorTest from './RefreshCoordinator.test';
+import todoWorkbenchTest from './TodoWorkbench.test';
+import todoWorklistStoreTest from './TodoWorklistStore.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -50,6 +51,7 @@ export default function testsuite() {
   pullRequestRepositoryTest();
   pullRequestDetailStoreTest();
   todoRepositoryTest();
-  todoStoreTest();
   refreshCoordinatorTest();
+  todoWorkbenchTest();
+  todoWorklistStoreTest();
 }

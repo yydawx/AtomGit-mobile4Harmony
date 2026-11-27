@@ -9,13 +9,17 @@ import {
 } from '../model/CollaborationEntities';
 import {
   ApprovePullRequestOptions,
+  MergePullRequestOptions,
   PullRequestFilesOptions,
   PullRequestRepository
 } from '../repository/Ports';
 import {
   APPROVAL_READBACK_UNCONFIRMED_MESSAGE,
   PR_HEAD_MISMATCH_MESSAGE,
+  PR_MERGE_UNCONFIRMED_MESSAGE,
   PullRequestHeadMismatchError,
+  PullRequestMergeBlockedError,
+  PullRequestMergeHeadMismatchError,
   isApprovalAccepted
 } from '../repository/PullRequestRepository';
 
@@ -23,6 +27,13 @@ export enum ApprovalUiState {
   Idle = 'idle',
   NeedsReview = 'needs_review',
   Approving = 'approving',
+  Confirmed = 'confirmed',
+  Unconfirmed = 'unconfirmed'
+}
+
+export enum MergeUiState {
+  Idle = 'idle',
+  Merging = 'merging',
   Confirmed = 'confirmed',
   Unconfirmed = 'unconfirmed'
 }
@@ -49,6 +60,11 @@ class EmptyPullRequestRepository implements PullRequestRepository {
 
   async approvePullRequest(ref: RepositoryItemRef, options?: ApprovePullRequestOptions): Promise<void> {
   }
+
+  async mergePullRequest(ref: RepositoryItemRef,
+    options?: MergePullRequestOptions): Promise<PullRequestDetail> {
+    return new PullRequestDetail(ref, '', '', '', false, '', false, '', '', '', '', '', []);
+  }
 }
 
 @ObservedV2
@@ -64,6 +80,12 @@ export class PullRequestDetailStore {
   @Trace refreshing: boolean = false;
   @Trace sendingComment: boolean = false;
   @Trace approving: boolean = false;
+  @Trace merging: boolean = false;
+  @Trace mergeState: MergeUiState = MergeUiState.Idle;
+  @Trace mergeMessage: string = '';
+  @Trace mergeErrorMessage: string = '';
+  @Trace mergeReadbackConfirmed: boolean = false;
+  @Trace mergeError: ApiError | undefined = undefined;
   @Trace commentDraft: string = '';
   @Trace commentSubmissionConfirmed: boolean = false;
   @Trace commentsHasMore: boolean = false;
@@ -90,6 +112,7 @@ export class PullRequestDetailStore {
   private currentUserLogin: string;
   private approvalSucceededCallback: () => void;
   private commentSucceededCallback: (ref: RepositoryItemRef) => void;
+  private mergeSucceededCallback: (ref: RepositoryItemRef) => void;
   private reviewedHeadSha: string = '';
   private commentsNextRequest: PageRequest | undefined = undefined;
   private detailRevision: number = 0;
@@ -97,16 +120,19 @@ export class PullRequestDetailStore {
   private filesRevision: number = 0;
   private commentWriteRevision: number = 0;
   private approvalRevision: number = 0;
+  private mergeRevision: number = 0;
   private detailToken: CancelToken | undefined = undefined;
   private commentsToken: CancelToken | undefined = undefined;
   private filesToken: CancelToken | undefined = undefined;
   private commentWriteToken: CancelToken | undefined = undefined;
   private approvalToken: CancelToken | undefined = undefined;
+  private mergeToken: CancelToken | undefined = undefined;
 
   constructor(dataSource: PullRequestRepository, currentUserLogin: string = '',
     commentsPerPage: number = 20, filesOptions: PullRequestFilesOptions = new PullRequestFilesOptions(),
     onApprovalSucceeded: () => void = () => {},
-    onCommentSucceeded: (ref: RepositoryItemRef) => void = () => {}) {
+    onCommentSucceeded: (ref: RepositoryItemRef) => void = () => {},
+    onMergeSucceeded: (ref: RepositoryItemRef) => void = () => {}) {
     this.dataSource = dataSource;
     this.currentUserLogin = currentUserLogin.trim();
     this.commentsPerPage = Number.isFinite(commentsPerPage) && commentsPerPage >= 1
@@ -114,6 +140,7 @@ export class PullRequestDetailStore {
     this.filesOptions = filesOptions;
     this.approvalSucceededCallback = onApprovalSucceeded;
     this.commentSucceededCallback = onCommentSucceeded;
+    this.mergeSucceededCallback = onMergeSucceeded;
   }
 
   setCurrentUser(login: string): void {
@@ -126,6 +153,10 @@ export class PullRequestDetailStore {
 
   setCommentSucceededCallback(callback: (ref: RepositoryItemRef) => void): void {
     this.commentSucceededCallback = callback;
+  }
+
+  setMergeSucceededCallback(callback: (ref: RepositoryItemRef) => void): void {
+    this.mergeSucceededCallback = callback;
   }
 
   async open(ref: RepositoryItemRef): Promise<void> {
@@ -490,22 +521,129 @@ export class PullRequestDetailStore {
     }
   }
 
+  canMerge(): boolean {
+    const detail = this.detail;
+    if (detail === undefined || this.merging) {
+      return false;
+    }
+    return detail.state.trim().toLowerCase() === 'open'
+      && !detail.merged && !detail.draft && detail.mergeable && detail.canMergeCheck
+      && detail.mergeState.overallPassed && detail.mergeState.mergedByUserPassed;
+  }
+
+  mergeBlockedReason(): string {
+    const detail = this.detail;
+    if (detail === undefined) {
+      return 'Refresh the pull request before merging.';
+    }
+    if (detail.mergeState.blockedReason.length > 0) {
+      return detail.mergeState.blockedReason;
+    }
+    if (!detail.mergeable) {
+      return 'Resolve merge conflicts before merging.';
+    }
+    if (detail.draft) {
+      return 'Draft pull requests cannot be merged.';
+    }
+    if (!detail.canMergeCheck) {
+      return 'Merge checks have not passed.';
+    }
+    if (detail.state.trim().toLowerCase() !== 'open') {
+      return 'Only an open pull request can be merged.';
+    }
+    if (!detail.mergeState.mergedByUserPassed) {
+      return 'You do not have permission to merge this pull request.';
+    }
+    return '';
+  }
+
+  async merge(): Promise<boolean> {
+    if (this.merging || this.ref === undefined || this.detail === undefined) {
+      return false;
+    }
+    const ref = this.ref;
+    const expectedHead = this.detail.headSha;
+    const revision = ++this.mergeRevision;
+    const token = this.replaceToken(this.mergeToken);
+    this.mergeToken = token;
+    this.merging = true;
+    this.mergeState = MergeUiState.Merging;
+    this.mergeMessage = '';
+    this.mergeErrorMessage = '';
+    this.mergeError = undefined;
+    this.mergeReadbackConfirmed = false;
+    try {
+      const readback = await this.dataSource.mergePullRequest(ref,
+        new MergePullRequestOptions(expectedHead, 'merge', false, false), token);
+      if (!this.isMergeCurrent(revision, token)) {
+        return false;
+      }
+      this.detail = readback;
+      if (!isMerged(readback)) {
+        throw new ApiError(ApiErrorKind.Conflict, 200, 0,
+          PR_MERGE_UNCONFIRMED_MESSAGE, '', '/pulls/merge');
+      }
+      this.mergeReadbackConfirmed = true;
+      this.mergeState = MergeUiState.Confirmed;
+      this.mergeMessage = 'Merge confirmed by pull request readback.';
+      this.mergeErrorMessage = '';
+      this.mergeError = undefined;
+      try {
+        this.mergeSucceededCallback(ref);
+      } catch {
+        // A host refresh callback must not turn a confirmed write into a failure.
+      }
+      return true;
+    } catch (err) {
+      if (!this.isMergeCurrent(revision, token)) {
+        return false;
+      }
+      const apiError = asApiError(err);
+      const preflightBlocked = apiError instanceof PullRequestMergeBlockedError
+        || apiError instanceof PullRequestMergeHeadMismatchError;
+      this.mergeState = preflightBlocked ? MergeUiState.Idle : MergeUiState.Unconfirmed;
+      this.mergeError = apiError;
+      this.mergeReadbackConfirmed = false;
+      this.mergeErrorMessage = apiError.message.length > 0
+        ? apiError.message : englishMessage(apiError);
+      if (preflightBlocked && apiError instanceof PullRequestMergeHeadMismatchError) {
+        try {
+          const latest = await this.dataSource.pullRequest(ref, token);
+          if (this.isMergeCurrent(revision, token)) {
+            this.detail = latest;
+          }
+        } catch {
+          // Preserve the original merge mismatch.
+        }
+      }
+      this.mergeMessage = this.mergeErrorMessage;
+      return false;
+    } finally {
+      if (this.isMergeCurrent(revision, token)) {
+        this.merging = false;
+      }
+    }
+  }
+
   cancelPending(): void {
     this.cancelToken(this.detailToken);
     this.cancelToken(this.commentsToken);
     this.cancelToken(this.filesToken);
     this.cancelToken(this.commentWriteToken);
     this.cancelToken(this.approvalToken);
+    this.cancelToken(this.mergeToken);
     this.detailToken = undefined;
     this.commentsToken = undefined;
     this.filesToken = undefined;
     this.commentWriteToken = undefined;
     this.approvalToken = undefined;
+    this.mergeToken = undefined;
     this.detailRevision++;
     this.commentsRevision++;
     this.filesRevision++;
     this.commentWriteRevision++;
     this.approvalRevision++;
+    this.mergeRevision++;
     this.loadingDetail = false;
     this.loadingComments = false;
     this.loadingFiles = false;
@@ -513,6 +651,11 @@ export class PullRequestDetailStore {
     this.refreshing = false;
     this.sendingComment = false;
     this.approving = false;
+    this.merging = false;
+    if (this.mergeState === MergeUiState.Merging) {
+      this.mergeState = MergeUiState.Unconfirmed;
+      this.mergeMessage = 'Merge status must be refreshed before showing success.';
+    }
     if (this.approvalState === ApprovalUiState.Approving) {
       this.approvalState = ApprovalUiState.Unconfirmed;
       this.approvalMessage = 'Approval status must be refreshed before showing success.';
@@ -544,6 +687,11 @@ export class PullRequestDetailStore {
     this.filesError = undefined;
     this.commentError = undefined;
     this.approvalError = undefined;
+    this.mergeState = MergeUiState.Idle;
+    this.mergeMessage = '';
+    this.mergeErrorMessage = '';
+    this.mergeReadbackConfirmed = false;
+    this.mergeError = undefined;
     this.reviewedHeadSha = '';
   }
 
@@ -627,6 +775,11 @@ export class PullRequestDetailStore {
     return this.approvalRevision === revision && this.approvalToken === token
       && !token.isCanceled();
   }
+
+  private isMergeCurrent(revision: number, token: CancelToken): boolean {
+    return this.mergeRevision === revision && this.mergeToken === token
+      && !token.isCanceled();
+  }
 }
 
 export class EmptyPullRequestDetailStore extends PullRequestDetailStore {
@@ -663,6 +816,11 @@ function mergeComments(previous: CollaborationComment[],
     result.push(comment);
   }
   return result;
+}
+
+function isMerged(detail: PullRequestDetail): boolean {
+  return detail.merged || detail.state.trim().toLowerCase() === 'merged'
+    || detail.mergedAt.trim().length > 0;
 }
 
 function asApiError(err: ESObject): ApiError {

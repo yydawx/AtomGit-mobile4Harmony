@@ -49,6 +49,7 @@ export interface IssueDto {
   user?: UserIdentityDto;
   assignees?: UserIdentityDto[];
   labels?: LabelIdentityDto[];
+  comments?: number;
   repository?: RepositoryIdentityDto;
 }
 
@@ -107,6 +108,9 @@ export interface ApprovalReviewerDto {
 
 /** Pull request payload from `/repos/{owner}/{repo}/pulls` and `/user/pulls`. */
 export interface PullRequestDto extends IssueDto {
+  draft?: boolean;
+  notes?: number;
+  testers?: UserIdentityDto[];
   merged?: boolean;
   merged_at?: string;
   mergeable?: boolean;

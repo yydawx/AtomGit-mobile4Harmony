@@ -8,16 +8,22 @@ import {
   CollaborationComment,
   PullRequestDetail,
   PullRequestFile,
+  PullRequestMergeState,
   RepositoryItemRef
 } from '../main/ets/model/CollaborationEntities';
 import {
   ApprovePullRequestOptions,
+  MergePullRequestOptions,
   PullRequestFilesOptions,
   PullRequestRepository
 } from '../main/ets/repository/Ports';
-import { PullRequestHeadMismatchError } from '../main/ets/repository/PullRequestRepository';
+import {
+  PullRequestHeadMismatchError,
+  PullRequestMergeBlockedError
+} from '../main/ets/repository/PullRequestRepository';
 import {
   ApprovalUiState,
+  MergeUiState,
   PullRequestDetailStore
 } from '../main/ets/viewmodel/PullRequestDetailStore';
 
@@ -68,19 +74,24 @@ class VoidDeferred {
 
 type DetailResponse = PullRequestDetail | ApiError | DetailDeferred;
 type CommentResponse = Page<CollaborationComment> | ApiError | CommentPageDeferred;
+type MergeResponse = PullRequestDetail | ApiError;
 
 class FakePullRequestRepository implements PullRequestRepository {
   readonly detailResponses: DetailResponse[] = [];
   readonly commentResponses: CommentResponse[] = [];
   readonly fileResponses: Array<PullRequestFile[] | ApiError> = [];
+  readonly mergeResponses: MergeResponse[] = [];
   readonly commentRequests: PageRequest[] = [];
+  readonly mergeOptions: Array<MergePullRequestOptions | undefined> = [];
   detailCalls: number = 0;
   commentCalls: number = 0;
   fileCalls: number = 0;
   addCalls: number = 0;
   approveCalls: number = 0;
+  mergeCalls: number = 0;
   addError: ApiError | undefined = undefined;
   approveError: ApiError | undefined = undefined;
+  mergeError: ApiError | undefined = undefined;
   addDeferred: VoidDeferred | undefined = undefined;
   approveDeferred: VoidDeferred | undefined = undefined;
 
@@ -150,6 +161,23 @@ class FakePullRequestRepository implements PullRequestRepository {
       await this.approveDeferred.promise;
     }
   }
+
+  async mergePullRequest(ref: RepositoryItemRef, options?: MergePullRequestOptions,
+    cancel?: CancellationSignal): Promise<PullRequestDetail> {
+    this.mergeCalls++;
+    this.mergeOptions.push(options);
+    if (this.mergeError !== undefined) {
+      throw this.mergeError;
+    }
+    const value = this.mergeResponses.shift();
+    if (value === undefined) {
+      throw new ApiError(ApiErrorKind.Unknown, 0, 0, 'unexpected merge request', '', '');
+    }
+    if (value instanceof ApiError) {
+      throw value;
+    }
+    return value;
+  }
 }
 
 class TodoState {
@@ -164,6 +192,24 @@ function detail(head: string = 'head-a', reviewerStatus: string = 'optional',
     head, 'base-a', 'https://atomgit.com/owner/repo/pulls/42',
     '2026-11-18T09:00:00Z', 'author',
     [new ApprovalReviewer('alice', 'Alice', reviewerStatus)]);
+}
+
+function mergedDetail(title: string = 'Pull request'): PullRequestDetail {
+  return new PullRequestDetail(REF, title, 'Body', 'merged', true,
+    '2026-11-18T10:00:00Z', true, 'head-a', 'base-a',
+    'https://atomgit.com/owner/repo/pulls/42', '2026-11-18T10:00:00Z', 'author',
+    [new ApprovalReviewer('alice', 'Alice', 'true')], false, true,
+    new PullRequestMergeState(true, true, true, true, true, true, true, true, true, true,
+      false, ''));
+}
+
+function permissionDeniedDetail(): PullRequestDetail {
+  return new PullRequestDetail(REF, 'Pull request', 'Body', 'open', false, '', true,
+    'head-a', 'base-a', 'https://atomgit.com/owner/repo/pulls/42',
+    '2026-11-18T09:00:00Z', 'author',
+    [new ApprovalReviewer('alice', 'Alice', 'optional')], false, false,
+    new PullRequestMergeState(false, false, false, true, true, true, false, true, true, true,
+      false, 'You are in project members list, but do not have PUSH permission.'));
 }
 
 function comment(id: string, parentId: string = '', body: string = 'Hello'): CollaborationComment {
@@ -426,6 +472,63 @@ export default function pullRequestDetailStoreTest() {
         expect(approved).assertFalse();
         expect(store.approvalError === writeError).assertTrue();
         expect(store.approvalReadbackConfirmed).assertFalse();
+      });
+    });
+
+    it('merges_when_server_allows_the_current_user_without_assignment', 0, () => {
+      const repository = new FakePullRequestRepository();
+      let callbackCount = 0;
+      repository.detailResponses.push(detail('head-a', 'optional'));
+      repository.mergeResponses.push(mergedDetail());
+      const store = new PullRequestDetailStore(repository, 'owner', 20,
+        new PullRequestFilesOptions(), () => {}, () => {}, (_ref: RepositoryItemRef) => {
+          callbackCount++;
+        });
+      return store.open(REF).then(() => {
+        expect(store.canMerge()).assertTrue();
+        return store.merge();
+      }).then((merged: boolean) => {
+        expect(merged).assertTrue();
+        expect(repository.mergeCalls).assertEqual(1);
+        expect(repository.mergeOptions[0]?.expectedHeadSha).assertEqual('head-a');
+        expect(store.mergeState).assertEqual(MergeUiState.Confirmed);
+        expect(store.mergeReadbackConfirmed).assertTrue();
+        expect(store.detail?.merged).assertTrue();
+        expect(callbackCount).assertEqual(1);
+      });
+    });
+
+    it('surfaces_the_server_permission_gate_without_claiming_success', 0, () => {
+      const repository = new FakePullRequestRepository();
+      repository.detailResponses.push(permissionDeniedDetail());
+      repository.mergeError = new PullRequestMergeBlockedError(
+        'You are in project members list, but do not have PUSH permission.');
+      const store = new PullRequestDetailStore(repository, 'reader');
+      return store.open(REF).then(() => {
+        expect(store.canMerge()).assertFalse();
+        expect(store.mergeBlockedReason().indexOf('PUSH permission') >= 0).assertTrue();
+        return store.merge();
+      }).then((merged: boolean) => {
+        expect(merged).assertFalse();
+        expect(repository.mergeCalls).assertEqual(1);
+        expect(store.mergeState).assertEqual(MergeUiState.Idle);
+        expect(store.mergeReadbackConfirmed).assertFalse();
+        expect(store.mergeErrorMessage.indexOf('PUSH permission') >= 0).assertTrue();
+      });
+    });
+
+    it('keeps_merge_unconfirmed_when_readback_is_not_merged', 0, () => {
+      const repository = new FakePullRequestRepository();
+      repository.detailResponses.push(detail('head-a', 'optional'));
+      repository.mergeResponses.push(detail('head-a', 'optional'));
+      const store = new PullRequestDetailStore(repository, 'owner');
+      return store.open(REF).then(() => {
+        return store.merge();
+      }).then((merged: boolean) => {
+        expect(merged).assertFalse();
+        expect(store.mergeState).assertEqual(MergeUiState.Unconfirmed);
+        expect(store.mergeReadbackConfirmed).assertFalse();
+        expect(store.mergeErrorMessage.length > 0).assertTrue();
       });
     });
 

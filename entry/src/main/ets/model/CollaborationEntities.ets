@@ -46,26 +46,6 @@ export class ActivityItem {
   }
 }
 
-/** Lightweight row model for todo and project issue/pull request lists. */
-export class WorkItem {
-  readonly kind: RepositoryItemKind;
-  readonly ref: RepositoryItemRef;
-  readonly title: string;
-  readonly state: string;
-  readonly htmlUrl: string;
-  readonly updatedAt: string;
-
-  constructor(kind: RepositoryItemKind, ref: RepositoryItemRef, title: string, state: string,
-    htmlUrl: string, updatedAt: string) {
-    this.kind = kind;
-    this.ref = ref;
-    this.title = title;
-    this.state = state;
-    this.htmlUrl = htmlUrl;
-    this.updatedAt = updatedAt;
-  }
-}
-
 /** Issue detail; the body and author are required by the processing page. */
 export class IssueDetail {
   readonly ref: RepositoryItemRef;
@@ -105,6 +85,42 @@ export class ApprovalReviewer {
   }
 }
 
+/** Server merge gates for the authenticated viewer. */
+export class PullRequestMergeState {
+  readonly overallPassed: boolean;
+  readonly mergedByUserPassed: boolean;
+  readonly statusWithoutUserAuth: boolean;
+  readonly conflictPassed: boolean;
+  readonly branchMissingPassed: boolean;
+  readonly workInProgressPassed: boolean;
+  readonly resolveDiscussionPassed: boolean;
+  readonly ciStatePassed: boolean;
+  readonly approvalsPassed: boolean;
+  readonly mergeBySelfPassed: boolean;
+  readonly canForceMerge: boolean;
+  readonly blockedReason: string;
+
+  constructor(overallPassed: boolean = true, mergedByUserPassed: boolean = true,
+    statusWithoutUserAuth: boolean = true, conflictPassed: boolean = true,
+    branchMissingPassed: boolean = true, workInProgressPassed: boolean = true,
+    resolveDiscussionPassed: boolean = true, ciStatePassed: boolean = true,
+    approvalsPassed: boolean = true, mergeBySelfPassed: boolean = true,
+    canForceMerge: boolean = false, blockedReason: string = '') {
+    this.overallPassed = overallPassed;
+    this.mergedByUserPassed = mergedByUserPassed;
+    this.statusWithoutUserAuth = statusWithoutUserAuth;
+    this.conflictPassed = conflictPassed;
+    this.branchMissingPassed = branchMissingPassed;
+    this.workInProgressPassed = workInProgressPassed;
+    this.resolveDiscussionPassed = resolveDiscussionPassed;
+    this.ciStatePassed = ciStatePassed;
+    this.approvalsPassed = approvalsPassed;
+    this.mergeBySelfPassed = mergeBySelfPassed;
+    this.canForceMerge = canForceMerge;
+    this.blockedReason = blockedReason;
+  }
+}
+
 /** Pull request detail; carries the head SHA and approval readback fields. */
 export class PullRequestDetail {
   readonly ref: RepositoryItemRef;
@@ -120,11 +136,16 @@ export class PullRequestDetail {
   readonly updatedAt: string;
   readonly author: string;
   readonly approvalReviewers: ApprovalReviewer[];
+  readonly draft: boolean;
+  readonly canMergeCheck: boolean;
+  readonly mergeState: PullRequestMergeState;
 
   constructor(ref: RepositoryItemRef, title: string, body: string, state: string,
     merged: boolean, mergedAt: string, mergeable: boolean, headSha: string, baseSha: string,
     htmlUrl: string, updatedAt: string, author: string,
-    approvalReviewers: ApprovalReviewer[] = []) {
+    approvalReviewers: ApprovalReviewer[] = [], draft: boolean = false,
+    canMergeCheck: boolean = true,
+    mergeState: PullRequestMergeState = new PullRequestMergeState()) {
     this.ref = ref;
     this.title = title;
     this.body = body;
@@ -138,6 +159,9 @@ export class PullRequestDetail {
     this.updatedAt = updatedAt;
     this.author = author;
     this.approvalReviewers = approvalReviewers;
+    this.draft = draft;
+    this.canMergeCheck = canMergeCheck;
+    this.mergeState = mergeState;
   }
 }
 

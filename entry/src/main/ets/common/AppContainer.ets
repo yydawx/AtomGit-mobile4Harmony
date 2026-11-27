@@ -13,10 +13,11 @@ import { TokenCipher } from '../security/TokenCipher';
 import { CacheStore } from '../storage/CacheStore';
 import { SettingsStore } from '../storage/SettingsStore';
 import { RepositoryItemRef } from '../model/CollaborationEntities';
+import { TodoListKind } from '../model/TodoWorkbench';
 import { ActivityStore } from '../viewmodel/ActivityStore';
 import { IssueDetailStore } from '../viewmodel/IssueDetailStore';
 import { PullRequestDetailStore } from '../viewmodel/PullRequestDetailStore';
-import { TodoStore } from '../viewmodel/TodoStore';
+import { TodoWorklistStore } from '../viewmodel/TodoWorklistStore';
 import { SessionStore } from '../viewmodel/SessionStore';
 import { RepoBrowseStore } from '../viewmodel/RepoBrowseStore';
 import { RefreshCoordinator, RefreshDomain, RefreshEvent } from './RefreshCoordinator';
@@ -39,8 +40,10 @@ export class AppContainer {
   readonly pullRequestDetail: PullRequestDetailStore;
   /** Todo workbench repository for the authenticated user. */
   readonly todoRepository: TodoApiRepository;
-  /** Shared Todo workbench state for the authenticated user. */
-  readonly todo: TodoStore;
+  /** Issues workbench state for the authenticated user. */
+  readonly todoIssues: TodoWorklistStore;
+  /** Pull Requests workbench state for the authenticated user. */
+  readonly todoPullRequests: TodoWorklistStore;
   /** Shared in-process invalidation channel for feature stores. */
   readonly refresh: RefreshCoordinator;
   /** Existing data source for session and repository browsing. */
@@ -63,7 +66,8 @@ export class AppContainer {
     this.activity = new ActivityStore(new ActivityApiRepository(this.http));
     this.issueRepository = new IssueApiRepository(this.http);
     this.todoRepository = new TodoApiRepository(this.http);
-    this.todo = new TodoStore(this.todoRepository);
+    this.todoIssues = new TodoWorklistStore(this.todoRepository, TodoListKind.Issues);
+    this.todoPullRequests = new TodoWorklistStore(this.todoRepository, TodoListKind.PullRequests);
     this.issueDetail = new IssueDetailStore(this.issueRepository, (ref: RepositoryItemRef) => {
       this.publishCollaborationRefresh(RefreshDomain.Issue, ref);
     });
@@ -74,6 +78,8 @@ export class AppContainer {
         if (ref !== undefined) {
           this.publishCollaborationRefresh(RefreshDomain.PullRequest, ref);
         }
+      }, (ref: RepositoryItemRef) => {
+        this.publishCollaborationRefresh(RefreshDomain.PullRequest, ref);
       }, (ref: RepositoryItemRef) => {
         this.publishCollaborationRefresh(RefreshDomain.PullRequest, ref);
       });
@@ -109,9 +115,15 @@ export class AppContainer {
       if (event.domain !== RefreshDomain.Issue && event.domain !== RefreshDomain.PullRequest) {
         return;
       }
-      this.todo.refreshForAccount(event.accountId).catch((err: Error) => {
-        hilog.warn(0x0000, 'AtomGit', 'Todo refresh failed: %{public}s', err.message);
-      });
+      if (event.domain === RefreshDomain.Issue) {
+        this.todoIssues.refreshForAccount(event.accountId).catch((err: Error) => {
+          hilog.warn(0x0000, 'AtomGit', 'Issue Todo refresh failed: %{public}s', err.message);
+        });
+      } else {
+        this.todoPullRequests.refreshForAccount(event.accountId).catch((err: Error) => {
+          hilog.warn(0x0000, 'AtomGit', 'Pull Request Todo refresh failed: %{public}s', err.message);
+        });
+      }
     });
   }
 }

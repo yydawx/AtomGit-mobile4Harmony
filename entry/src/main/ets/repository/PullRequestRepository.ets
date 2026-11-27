@@ -12,10 +12,12 @@ import {
   CollaborationComment,
   PullRequestDetail,
   PullRequestFile,
+  PullRequestMergeState,
   RepositoryItemRef
 } from '../model/CollaborationEntities';
 import {
   ApprovePullRequestOptions,
+  MergePullRequestOptions,
   PullRequestFilesOptions,
   PullRequestRepository
 } from './Ports';
@@ -40,6 +42,41 @@ interface ApprovalReviewerApiDto {
   accept_status?: string | boolean;
 }
 
+interface MergeReasonApiDto {
+  merged_by_user_passed?: string;
+  conflict_passed?: string;
+  branch_missing_passed?: string;
+  non_ff_passed?: string;
+  mr_state_passed?: string;
+  work_in_progress_passed?: string;
+  resolve_discussion_passed?: string;
+  ci_state_passed?: string;
+  merge_by_self_passed?: string;
+  approval_reviewers_required_passed?: string;
+  approval_approvers_required_passed?: string;
+  approval_testers_required_passed?: string;
+}
+
+interface MergeStateApiDto {
+  merge_request_id?: number;
+  state?: boolean;
+  status_without_user_auth?: boolean;
+  conflict_passed?: boolean;
+  branch_missing_passed?: boolean;
+  non_ff_passed?: boolean;
+  mr_state_passed?: boolean;
+  merged_by_user_passed?: boolean;
+  work_in_progress_passed?: boolean;
+  resolve_discussion_passed?: boolean;
+  ci_state_passed?: boolean;
+  merge_by_self_passed?: boolean;
+  can_force_merge?: boolean;
+  approval_reviewers_required_passed?: boolean;
+  approval_approvers_required_passed?: boolean;
+  approval_testers_required_passed?: boolean;
+  reason?: MergeReasonApiDto;
+}
+
 interface PullRequestApiDto {
   id?: string | number;
   number?: string | number;
@@ -50,12 +87,15 @@ interface PullRequestApiDto {
   web_url?: string;
   updated_at?: string;
   user?: UserApiDto;
+  draft?: boolean;
   merged?: boolean;
   merged_at?: string;
   mergeable?: boolean;
+  can_merge_check?: boolean;
   head?: BranchApiDto;
   base?: BranchApiDto;
   approval_reviewers?: ApprovalReviewerApiDto[];
+  mergeable_state?: MergeStateApiDto;
 }
 
 interface CommentApiDto {
@@ -102,6 +142,12 @@ export const PR_HEAD_MISMATCH_MESSAGE: string =
   'The pull request head changed. Review the latest head before approving.';
 export const APPROVAL_READBACK_UNCONFIRMED_MESSAGE: string =
   'Approval was submitted, but the approval status could not be confirmed.';
+export const PR_MERGE_HEAD_MISMATCH_MESSAGE: string =
+  'The pull request head changed. Review the latest head before merging.';
+export const PR_MERGE_BLOCKED_MESSAGE: string =
+  'The pull request is not currently mergeable.';
+export const PR_MERGE_UNCONFIRMED_MESSAGE: string =
+  'The merge request was submitted, but the merged state could not be confirmed.';
 
 /** A recognizable ApiError for the expected-head guard. */
 export class PullRequestHeadMismatchError extends ApiError {
@@ -110,6 +156,25 @@ export class PullRequestHeadMismatchError extends ApiError {
 
   constructor(expectedHeadSha: string, currentHeadSha: string) {
     super(ApiErrorKind.Conflict, 409, 409, PR_HEAD_MISMATCH_MESSAGE, '', '');
+    this.expectedHeadSha = expectedHeadSha;
+    this.currentHeadSha = currentHeadSha;
+  }
+}
+
+/** A recognizable server gate failure before any merge write is sent. */
+export class PullRequestMergeBlockedError extends ApiError {
+  constructor(reason: string) {
+    super(ApiErrorKind.Conflict, 409, 0, reason, '', '');
+  }
+}
+
+/** The PR changed between the reviewed head and the merge preflight. */
+export class PullRequestMergeHeadMismatchError extends ApiError {
+  readonly expectedHeadSha: string;
+  readonly currentHeadSha: string;
+
+  constructor(expectedHeadSha: string, currentHeadSha: string) {
+    super(ApiErrorKind.Conflict, 409, 0, PR_MERGE_HEAD_MISMATCH_MESSAGE, '', '');
     this.expectedHeadSha = expectedHeadSha;
     this.currentHeadSha = currentHeadSha;
   }
@@ -217,6 +282,32 @@ export class PullRequestApiRepository implements PullRequestRepository {
     }
   }
 
+  async mergePullRequest(ref: RepositoryItemRef,
+    options?: MergePullRequestOptions,
+    cancel?: CancellationSignal): Promise<PullRequestDetail> {
+    const safe = options === undefined ? new MergePullRequestOptions() : options;
+    const preflight = await this.fetchPullRequest(ref, cancel);
+    if (safe.expectedHeadSha.length > 0 && !sameSha(safe.expectedHeadSha, preflight.headSha)) {
+      throw new PullRequestMergeHeadMismatchError(safe.expectedHeadSha, preflight.headSha);
+    }
+    if (!canMerge(preflight)) {
+      throw new PullRequestMergeBlockedError(mergeBlockedReason(preflight));
+    }
+    const payload = JSON.stringify({
+      merge_method: safe.mergeMethod,
+      force_merge: safe.forceMerge,
+      squash: safe.squash
+    });
+    const spec = new RequestSpec(HttpMethod.PUT, this.mergePath(ref), [], false, true, payload);
+    await this.http.request(spec, cancel);
+    const readback = await this.fetchPullRequest(ref, cancel);
+    if (!isMerged(readback)) {
+      throw new ApiError(ApiErrorKind.Conflict, 200, 0,
+        PR_MERGE_UNCONFIRMED_MESSAGE, '', this.mergePath(ref));
+    }
+    return readback;
+  }
+
   private async fetchPullRequest(ref: RepositoryItemRef, cancel?: CancellationSignal):
     Promise<PullRequestDetail> {
     const path = this.pullRequestPath(ref);
@@ -254,6 +345,7 @@ export class PullRequestApiRepository implements PullRequestRepository {
       reviewers.push(new ApprovalReviewer(login, name, status));
     }
     const htmlUrl = stringValue(dto.html_url, stringValue(dto.web_url, ''));
+    const mergeState = this.toMergeState(dto.mergeable_state);
     return new PullRequestDetail(
       ref,
       stringValue(dto.title, ''),
@@ -268,7 +360,34 @@ export class PullRequestApiRepository implements PullRequestRepository {
       stringValue(dto.updated_at, ''),
       stringValue(dto.user === undefined ? undefined : dto.user.login,
         stringValue(dto.user === undefined ? undefined : dto.user.name, '')),
-      reviewers
+      reviewers,
+      dto.draft === true,
+      dto.can_merge_check !== false,
+      mergeState
+    );
+  }
+
+  // Merge permissions and every blocking gate are server-computed for the current viewer.
+  private toMergeState(dto: MergeStateApiDto | undefined): PullRequestMergeState {
+    if (dto === undefined) {
+      return new PullRequestMergeState();
+    }
+    const approvalsPassed = dto.approval_reviewers_required_passed !== false
+      && dto.approval_approvers_required_passed !== false
+      && dto.approval_testers_required_passed !== false;
+    return new PullRequestMergeState(
+      dto.state === true,
+      dto.merged_by_user_passed === true,
+      dto.status_without_user_auth === true,
+      dto.conflict_passed === true,
+      dto.branch_missing_passed === true,
+      dto.work_in_progress_passed === true,
+      dto.resolve_discussion_passed === true,
+      dto.ci_state_passed === true,
+      approvalsPassed,
+      dto.merge_by_self_passed === true,
+      dto.can_force_merge === true,
+      mergeStateReason(dto)
     );
   }
 
@@ -384,6 +503,93 @@ export class PullRequestApiRepository implements PullRequestRepository {
   private reviewPath(ref: RepositoryItemRef): string {
     return this.pullRequestPath(ref) + '/review';
   }
+
+  private mergePath(ref: RepositoryItemRef): string {
+    return this.pullRequestPath(ref) + '/merge';
+  }
+}
+
+function mergeStateReason(dto: MergeStateApiDto): string {
+  const reason = dto.reason;
+  if (dto.merged_by_user_passed !== true) {
+    return reasonText(reason === undefined ? undefined : reason.merged_by_user_passed,
+      'You do not have permission to merge this pull request.');
+  }
+  if (dto.mr_state_passed !== true) {
+    return reasonText(reason === undefined ? undefined : reason.mr_state_passed,
+      'Only an open pull request can be merged.');
+  }
+  if (dto.conflict_passed !== true) {
+    return reasonText(reason === undefined ? undefined : reason.conflict_passed,
+      'Resolve merge conflicts before merging.');
+  }
+  if (dto.branch_missing_passed !== true) {
+    return reasonText(reason === undefined ? undefined : reason.branch_missing_passed,
+      'The source or target branch is unavailable.');
+  }
+  if (dto.work_in_progress_passed !== true) {
+    return reasonText(reason === undefined ? undefined : reason.work_in_progress_passed,
+      'Draft pull requests cannot be merged.');
+  }
+  if (dto.resolve_discussion_passed !== true) {
+    return reasonText(reason === undefined ? undefined : reason.resolve_discussion_passed,
+      'Resolve required discussions before merging.');
+  }
+  if (dto.ci_state_passed !== true) {
+    return reasonText(reason === undefined ? undefined : reason.ci_state_passed,
+      'Required checks have not passed.');
+  }
+  if (dto.approval_reviewers_required_passed === false
+    || dto.approval_approvers_required_passed === false
+    || dto.approval_testers_required_passed === false) {
+    return 'Required approvals or tests have not been completed.';
+  }
+  if (dto.merge_by_self_passed !== true) {
+    return reasonText(reason === undefined ? undefined : reason.merge_by_self_passed,
+      'Self-merge is disabled for this repository.');
+  }
+  if (dto.non_ff_passed !== true) {
+    return reasonText(reason === undefined ? undefined : reason.non_ff_passed,
+      'The merge request cannot be fast-forwarded under the repository rules.');
+  }
+  return dto.state === true ? '' : PR_MERGE_BLOCKED_MESSAGE;
+}
+
+function reasonText(value: string | undefined, fallback: string): string {
+  return value === undefined || value.trim().length === 0 ? fallback : value.trim();
+}
+
+function canMerge(detail: PullRequestDetail): boolean {
+  return detail.state.trim().toLowerCase() === 'open'
+    && !detail.merged && !detail.draft && detail.mergeable && detail.canMergeCheck
+    && detail.mergeState.overallPassed && detail.mergeState.mergedByUserPassed;
+}
+
+function mergeBlockedReason(detail: PullRequestDetail): string {
+  if (detail.mergeState.blockedReason.length > 0) {
+    return detail.mergeState.blockedReason;
+  }
+  if (!detail.mergeable) {
+    return 'Resolve merge conflicts before merging.';
+  }
+  if (detail.draft) {
+    return 'Draft pull requests cannot be merged.';
+  }
+  if (!detail.canMergeCheck) {
+    return 'Merge checks have not passed.';
+  }
+  if (detail.state.trim().toLowerCase() !== 'open') {
+    return 'Only an open pull request can be merged.';
+  }
+  if (!detail.mergeState.mergedByUserPassed) {
+    return 'You do not have permission to merge this pull request.';
+  }
+  return PR_MERGE_BLOCKED_MESSAGE;
+}
+
+function isMerged(detail: PullRequestDetail): boolean {
+  return detail.merged || detail.mergedAt.trim().length > 0
+    || detail.state.trim().toLowerCase() === 'merged';
 }
 
 export function isApprovalAccepted(status: string): boolean {

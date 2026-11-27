@@ -22,6 +22,7 @@ import {
 import {
   ApprovalUiState,
   EmptyPullRequestDetailStore,
+  MergeUiState,
   PullRequestDetailStore
 } from '../../viewmodel/PullRequestDetailStore';
 
@@ -33,6 +34,7 @@ export struct PullRequestDetailPage {
   @Param onOpenWeb: (url: string) => void = () => {};
 
   @Local selectedFileIndex: number = 0;
+  @Local confirmMerge: boolean = false;
   @Local metrics: DisplayMetrics = DisplayMetrics.instance();
 
   private readonly contentScroller: Scroller = new Scroller();
@@ -172,6 +174,41 @@ export struct PullRequestDetailPage {
     return 'Approve only after reviewing the current head, comments, and changed files.';
   }
 
+  private mergeStatusLabel(detail: PullRequestDetail): string {
+    if (detail.merged) {
+      return 'Merged';
+    }
+    if (this.store.merging) {
+      return 'Merging';
+    }
+    if (this.store.canMerge()) {
+      return 'Ready to merge';
+    }
+    if (!detail.mergeState.mergedByUserPassed) {
+      return 'No merge permission';
+    }
+    if (detail.draft) {
+      return 'Draft';
+    }
+    if (!detail.mergeable) {
+      return 'Merge conflicts';
+    }
+    if (!detail.canMergeCheck) {
+      return 'Checks blocked';
+    }
+    return 'Merge blocked';
+  }
+
+  private mergeStatusColor(detail: PullRequestDetail): ResourceColor {
+    if (detail.merged || this.store.canMerge()) {
+      return $r('app.color.ag_success');
+    }
+    if (!detail.mergeState.mergedByUserPassed) {
+      return $r('app.color.ag_warning');
+    }
+    return $r('app.color.ag_error');
+  }
+
   private commentMeta(comment: CollaborationComment): string {
     const parts: string[] = [];
     if (comment.commentType.length > 0) {
@@ -209,10 +246,9 @@ export struct PullRequestDetailPage {
               .backgroundColor($r('app.color.ag_warning'))
           }
           Blank()
-          Text(detail.mergeable ? 'Mergeable' : 'Not mergeable')
+          Text(this.mergeStatusLabel(detail))
             .fontSize(FontSize.caption)
-            .fontColor(detail.mergeable
-              ? $r('app.color.ag_success') : $r('app.color.ag_error'))
+            .fontColor(this.mergeStatusColor(detail))
         }
         .width('100%')
 
@@ -389,6 +425,123 @@ export struct PullRequestDetailPage {
         }
       }
       .width('100%')
+    }
+  }
+
+  @Builder
+  mergeCard(detail: PullRequestDetail): void {
+    GlassCard() {
+      Column({ space: Dimens.md }) {
+        Row({ space: Dimens.sm }) {
+          Text('Merge')
+            .fontSize(FontSize.title)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.ag_text_primary'))
+          Blank()
+          Text(detail.merged ? 'Merged'
+            : this.store.merging ? 'Merging' : 'Permission checked by AtomGit')
+            .fontSize(FontSize.caption)
+            .fontColor(detail.merged
+              ? $r('app.color.ag_success') : $r('app.color.ag_text_tertiary'))
+        }
+        .width('100%')
+
+        if (this.store.mergeErrorMessage.length > 0) {
+          Text(this.store.mergeErrorMessage)
+            .fontSize(FontSize.caption)
+            .fontColor($r('app.color.ag_error'))
+            .width('100%')
+            .id('pr_merge_error')
+        }
+
+        if (this.store.mergeMessage.length > 0
+          && this.store.mergeErrorMessage.length === 0) {
+          Text(this.store.mergeMessage)
+            .fontSize(FontSize.caption)
+            .fontColor(this.store.mergeReadbackConfirmed
+              ? $r('app.color.ag_success') : $r('app.color.ag_warning'))
+            .width('100%')
+            .id('pr_merge_status')
+        }
+
+        if (detail.merged) {
+          Text('This pull request has been merged.')
+            .fontSize(FontSize.body)
+            .fontColor($r('app.color.ag_text_secondary'))
+            .width('100%')
+        } else if (this.store.merging) {
+          Row({ space: Dimens.sm }) {
+            LoadingProgress()
+              .width(20)
+              .height(20)
+              .color($r('app.color.ag_accent'))
+            Text('Checking permission and merging the current head')
+              .fontSize(FontSize.caption)
+              .fontColor($r('app.color.ag_text_secondary'))
+          }
+          .width('100%')
+        } else if (this.store.canMerge()) {
+          Text('AtomGit will verify your repository permission. Assignment is not required.')
+            .fontSize(FontSize.caption)
+            .fontColor($r('app.color.ag_text_secondary'))
+            .width('100%')
+
+          if (this.confirmMerge) {
+            Text('Merge pull request #' + detail.ref.number.toString()
+              + ' into the target branch?')
+              .fontSize(FontSize.body)
+              .fontColor($r('app.color.ag_text_primary'))
+              .width('100%')
+              .padding(Dimens.md)
+              .borderRadius(Radius.chip)
+              .backgroundColor($r('app.color.ag_surface_sunken'))
+            Row({ space: Dimens.sm }) {
+              Button('Cancel')
+                .layoutWeight(1)
+                .height(44)
+                .borderRadius(Radius.chip + 2)
+                .backgroundColor($r('app.color.ag_surface_sunken'))
+                .fontColor($r('app.color.ag_text_primary'))
+                .onClick(() => {
+                  this.confirmMerge = false;
+                })
+                .id('pr_merge_cancel')
+              Button('Confirm merge')
+                .layoutWeight(1)
+                .height(44)
+                .borderRadius(Radius.chip + 2)
+                .backgroundColor($r('app.color.ag_warning'))
+                .fontColor($r('app.color.ag_text_on_accent'))
+                .onClick(() => {
+                  this.store.merge().then(() => {
+                    this.confirmMerge = false;
+                  });
+                })
+                .id('pr_merge_confirm')
+            }
+            .width('100%')
+          } else {
+            Button('Merge pull request')
+              .width('100%')
+              .height(44)
+              .borderRadius(Radius.chip + 2)
+              .backgroundColor($r('app.color.ag_accent'))
+              .fontColor($r('app.color.ag_text_on_accent'))
+              .onClick(() => {
+                this.confirmMerge = true;
+              })
+              .id('pr_merge')
+          }
+        } else {
+          Text(this.store.mergeBlockedReason())
+            .fontSize(FontSize.caption)
+            .fontColor($r('app.color.ag_warning'))
+            .width('100%')
+            .id('pr_merge_blocked')
+        }
+      }
+      .width('100%')
+      .id('pr_merge_card')
     }
   }
 
@@ -716,6 +869,7 @@ export struct PullRequestDetailPage {
     Column({ space: Dimens.md }) {
       this.detailCard(detail)
       this.approvalCard(detail)
+      this.mergeCard(detail)
       this.filesCard()
       this.commentsCard()
     }

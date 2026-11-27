@@ -14,12 +14,15 @@ import { HttpMethod } from '../main/ets/network/NetworkPolicy';
 import { RequestSpec } from '../main/ets/network/RequestSpec';
 import {
   ApprovePullRequestOptions,
+  MergePullRequestOptions,
   PullRequestFilesOptions
 } from '../main/ets/repository/Ports';
 import {
   PR_HEAD_MISMATCH_MESSAGE,
   PullRequestApiRepository,
-  PullRequestHeadMismatchError
+  PullRequestHeadMismatchError,
+  PullRequestMergeBlockedError,
+  PullRequestMergeHeadMismatchError
 } from '../main/ets/repository/PullRequestRepository';
 
 class RecordedRequest {
@@ -84,8 +87,15 @@ export default function pullRequestRepositoryTest() {
       http.respond('{"number":42,"title":"Review module","body":"Details",' +
         '"state":"open","html_url":"https://atomgit.com/owner/repo/pulls/42",' +
         '"updated_at":"2026-11-18T09:00:00Z","user":{"login":"author"},' +
-        '"merged":false,"merged_at":"","mergeable":true,' +
+        '"draft":false,"merged":false,"merged_at":"","mergeable":true,' +
+        '"can_merge_check":true,' +
         '"head":{"ref":"feature","sha":"head-a"},"base":{"ref":"main","sha":"base-a"},' +
+        '"mergeable_state":{"state":true,"merged_by_user_passed":true,' +
+        '"conflict_passed":true,"branch_missing_passed":true,"mr_state_passed":true,' +
+        '"work_in_progress_passed":true,"resolve_discussion_passed":true,' +
+        '"ci_state_passed":true,"merge_by_self_passed":true,' +
+        '"approval_reviewers_required_passed":true,"approval_approvers_required_passed":true,' +
+        '"approval_testers_required_passed":true},' +
         '"approval_reviewers":[{"login":"alice","name":"Alice","accept_status":"true"}]}');
       const repository = new PullRequestApiRepository(http, 'alice');
       return repository.pullRequest(REF).then((detail: PullRequestDetail) => {
@@ -98,8 +108,125 @@ export default function pullRequestRepositoryTest() {
         expect(detail.baseSha).assertEqual('base-a');
         expect(detail.author).assertEqual('author');
         expect(detail.mergeable).assertTrue();
+        expect(detail.draft).assertFalse();
+        expect(detail.canMergeCheck).assertTrue();
+        expect(detail.mergeState.overallPassed).assertTrue();
+        expect(detail.mergeState.mergedByUserPassed).assertTrue();
         expect(detail.approvalReviewers[0].acceptStatus).assertEqual('true');
       });
+    });
+
+    it('maps_server_merge_permission_and_blocking_reason', 0, () => {
+      const http = new SequenceHttp();
+      http.respond('{"number":42,"title":"Protected merge","state":"open",' +
+        '"html_url":"https://atomgit.com/owner/repo/pulls/42","user":{"login":"author"},' +
+        '"draft":false,"merged":false,"mergeable":true,"can_merge_check":false,' +
+        '"head":{"sha":"head-a"},"base":{"sha":"base-a"},' +
+        '"mergeable_state":{"state":false,"status_without_user_auth":false,' +
+        '"merged_by_user_passed":false,"conflict_passed":true,' +
+        '"branch_missing_passed":true,"mr_state_passed":true,' +
+        '"work_in_progress_passed":true,"resolve_discussion_passed":false,' +
+        '"ci_state_passed":true,"merge_by_self_passed":true,' +
+        '"approval_reviewers_required_passed":true,' +
+        '"approval_approvers_required_passed":true,' +
+        '"approval_testers_required_passed":true,' +
+        '"reason":{"merged_by_user_passed":"You do not have PUSH permission."}}}');
+      const repository = new PullRequestApiRepository(http, 'reader');
+      return repository.pullRequest(REF).then((detail: PullRequestDetail) => {
+        expect(detail.mergeState.overallPassed).assertFalse();
+        expect(detail.mergeState.mergedByUserPassed).assertFalse();
+        expect(detail.mergeState.blockedReason.indexOf('PUSH permission') >= 0).assertTrue();
+      });
+    });
+
+    it('merges_the_expected_head_and_returns_readback_detail', 0, () => {
+      const http = new SequenceHttp();
+      http.respond('{"number":42,"title":"Merge me","state":"open",' +
+        '"html_url":"https://atomgit.com/owner/repo/pulls/42","user":{"login":"author"},' +
+        '"draft":false,"merged":false,"mergeable":true,"can_merge_check":true,' +
+        '"head":{"sha":"head-a"},"base":{"sha":"base-a"},' +
+        '"mergeable_state":{"state":true,"merged_by_user_passed":true,' +
+        '"conflict_passed":true,"branch_missing_passed":true,"mr_state_passed":true,' +
+        '"work_in_progress_passed":true,"resolve_discussion_passed":true,' +
+        '"ci_state_passed":true,"merge_by_self_passed":true,' +
+        '"approval_reviewers_required_passed":true,' +
+        '"approval_approvers_required_passed":true,' +
+        '"approval_testers_required_passed":true}}');
+      http.respond('{"sha":"merge-sha","merged":true,"message":"merged"}');
+      http.respond('{"number":42,"title":"Merge me","state":"merged",' +
+        '"html_url":"https://atomgit.com/owner/repo/pulls/42","user":{"login":"author"},' +
+        '"draft":false,"merged":true,"merged_at":"2026-11-18T10:00:00Z",' +
+        '"mergeable":true,"can_merge_check":true,"head":{"sha":"head-a"},' +
+        '"base":{"sha":"base-a"},"mergeable_state":{"state":true,' +
+        '"merged_by_user_passed":true,"conflict_passed":true,' +
+        '"branch_missing_passed":true,"mr_state_passed":true,' +
+        '"work_in_progress_passed":true,"resolve_discussion_passed":true,' +
+        '"ci_state_passed":true,"merge_by_self_passed":true,' +
+        '"approval_reviewers_required_passed":true,' +
+        '"approval_approvers_required_passed":true,' +
+        '"approval_testers_required_passed":true}}');
+      const repository = new PullRequestApiRepository(http, 'owner');
+      return repository.mergePullRequest(REF,
+        new MergePullRequestOptions('head-a')).then((detail: PullRequestDetail) => {
+          expect(http.requests.length).assertEqual(3);
+          expect(http.requests[0].method).assertEqual(HttpMethod.GET);
+          expect(http.requests[1].method).assertEqual(HttpMethod.PUT);
+          expect(http.requests[1].path).assertEqual('/repos/owner/repo/pulls/42/merge');
+          const mergeBody = http.requests[1].body ?? '';
+          expect(mergeBody.indexOf('"merge_method":"merge"') >= 0).assertTrue();
+          expect(mergeBody.indexOf('"force_merge":false') >= 0).assertTrue();
+          expect(http.requests[2].method).assertEqual(HttpMethod.GET);
+          expect(detail.merged).assertTrue();
+          expect(detail.state).assertEqual('merged');
+        });
+    });
+
+    it('rejects_merge_before_write_when_server_denies_permission', 0, () => {
+      const http = new SequenceHttp();
+      http.respond('{"number":42,"title":"Protected merge","state":"open",' +
+        '"html_url":"https://atomgit.com/owner/repo/pulls/42","user":{"login":"author"},' +
+        '"draft":false,"merged":false,"mergeable":true,"can_merge_check":false,' +
+        '"head":{"sha":"head-a"},"base":{"sha":"base-a"},' +
+        '"mergeable_state":{"state":false,"merged_by_user_passed":false,' +
+        '"conflict_passed":true,"branch_missing_passed":true,"mr_state_passed":true,' +
+        '"work_in_progress_passed":true,"resolve_discussion_passed":true,' +
+        '"ci_state_passed":true,"merge_by_self_passed":true,' +
+        '"approval_reviewers_required_passed":true,' +
+        '"approval_approvers_required_passed":true,' +
+        '"approval_testers_required_passed":true,' +
+        '"reason":{"merged_by_user_passed":"No PUSH permission."}}}');
+      const repository = new PullRequestApiRepository(http, 'reader');
+      return repository.mergePullRequest(REF,
+        new MergePullRequestOptions('head-a')).then(() => {
+          expect(false).assertTrue();
+        }).catch((error: ESObject) => {
+          expect(error instanceof PullRequestMergeBlockedError).assertTrue();
+          expect((error as ApiError).message.indexOf('PUSH permission') >= 0).assertTrue();
+          expect(http.requests.length).assertEqual(1);
+        });
+    });
+
+    it('rejects_merge_when_the_reviewed_head_changed', 0, () => {
+      const http = new SequenceHttp();
+      http.respond('{"number":42,"title":"Changed head","state":"open",' +
+        '"html_url":"https://atomgit.com/owner/repo/pulls/42","user":{"login":"author"},' +
+        '"draft":false,"merged":false,"mergeable":true,"can_merge_check":true,' +
+        '"head":{"sha":"head-b"},"base":{"sha":"base-a"},' +
+        '"mergeable_state":{"state":true,"merged_by_user_passed":true,' +
+        '"conflict_passed":true,"branch_missing_passed":true,"mr_state_passed":true,' +
+        '"work_in_progress_passed":true,"resolve_discussion_passed":true,' +
+        '"ci_state_passed":true,"merge_by_self_passed":true,' +
+        '"approval_reviewers_required_passed":true,' +
+        '"approval_approvers_required_passed":true,' +
+        '"approval_testers_required_passed":true}}');
+      const repository = new PullRequestApiRepository(http, 'owner');
+      return repository.mergePullRequest(REF,
+        new MergePullRequestOptions('head-a')).then(() => {
+          expect(false).assertTrue();
+        }).catch((error: ESObject) => {
+          expect(error instanceof PullRequestMergeHeadMismatchError).assertTrue();
+          expect(http.requests.length).assertEqual(1);
+        });
     });
 
     it('maps_comment_pages_including_nested_replies', 0, () => {

@@ -1,9 +1,12 @@
 import { RepositoryItemRef } from '../model/CollaborationEntities';
+import { TodoListKind } from '../model/TodoWorkbench';
 
 export enum AppRouteName {
   IssueDetail = 'issueDetail',
   PullRequestDetail = 'pullRequestDetail',
-  RepositoryDetail = 'repoDetail'
+  RepositoryDetail = 'repoDetail',
+  TodoIssues = 'todoIssues',
+  TodoPullRequests = 'todoPullRequests'
 }
 
 export class RepositoryDetailParams {
@@ -22,12 +25,19 @@ export class PullRequestDetailParams {
   constructor(ref: RepositoryItemRef) { this.ref = ref; }
 }
 
+export class TodoListParams {
+  readonly kind: TodoListKind;
+  constructor(kind: TodoListKind) { this.kind = kind; }
+}
+
+export type AppRouteParams =
+  RepositoryDetailParams | IssueDetailParams | PullRequestDetailParams | TodoListParams;
+
 /** NavPathStack still receives a name and object; this helper centralizes route spelling. */
 export class AppRoute {
   readonly name: AppRouteName;
-  readonly params: RepositoryDetailParams | IssueDetailParams | PullRequestDetailParams;
-  private constructor(name: AppRouteName,
-    params: RepositoryDetailParams | IssueDetailParams | PullRequestDetailParams) {
+  readonly params: AppRouteParams;
+  private constructor(name: AppRouteName, params: AppRouteParams) {
     this.name = name;
     this.params = params;
   }
@@ -42,5 +52,14 @@ export class AppRoute {
 
   static repository(owner: string, repo: string): AppRoute {
     return new AppRoute(AppRouteName.RepositoryDetail, new RepositoryDetailParams(owner, repo));
+  }
+
+  static todoIssues(): AppRoute {
+    return new AppRoute(AppRouteName.TodoIssues, new TodoListParams(TodoListKind.Issues));
+  }
+
+  static todoPullRequests(): AppRoute {
+    return new AppRoute(AppRouteName.TodoPullRequests,
+      new TodoListParams(TodoListKind.PullRequests));
   }
 }
